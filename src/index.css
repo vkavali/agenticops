@@ -1,0 +1,41 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Hide scrollbars for cleaner look */
+.hidden-scrollbar::-webkit-scrollbar { width: 0px; height: 0px; }
+.hidden-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* The "Marching Ants" animation for data flow lines */
+.marching-ants {
+  animation: march linear infinite;
+}
+@keyframes march {
+  to { stroke-dashoffset: -16; }
+}
+
+/* Fixing spinner */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+.animate-spin { animation: spin 1s linear infinite; }
+.animate-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
