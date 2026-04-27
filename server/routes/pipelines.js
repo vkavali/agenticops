@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { query, execute, queryOne } from '../db.js';
 import { broadcast } from '../sse.js';
+import { executePipeline, cancelRun } from '../executor.js';
 
 const router = Router();
 
@@ -23,11 +24,11 @@ router.get('/', async (req, res) => {
 
 // Create pipeline
 router.post('/', async (req, res) => {
-  const { id, name, branch, stages } = req.body;
+  const { id, name, branch, stages, repo_full_name } = req.body;
   const pid = id || `pipe-${Date.now()}`;
   await execute(
-    'INSERT INTO pipelines (id,name,branch,last_run,last_run_time,trigger_config,schedule,stages) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
-    [pid, name || 'new-pipeline', branch || 'main', 'passed', 'new', JSON.stringify({ type: 'push', branch: 'main' }), null, JSON.stringify(stages || [])]
+    'INSERT INTO pipelines (id,name,branch,last_run,last_run_time,trigger_config,schedule,stages,repo_full_name) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+    [pid, name || 'new-pipeline', branch || 'main', 'new', '—', JSON.stringify({ type: 'push', branch: branch || 'main' }), null, JSON.stringify(stages || []), repo_full_name || null]
   );
   const row = await queryOne('SELECT * FROM pipelines WHERE id=$1', [pid]);
   broadcast('pipeline:created', row);
@@ -36,10 +37,10 @@ router.post('/', async (req, res) => {
 
 // Update pipeline
 router.put('/:id', async (req, res) => {
-  const { name, branch, stages, trigger_config, schedule } = req.body;
+  const { name, branch, stages, trigger_config, schedule, repo_full_name } = req.body;
   await execute(
-    'UPDATE pipelines SET name=COALESCE($1,name), branch=COALESCE($2,branch), stages=COALESCE($3,stages), trigger_config=COALESCE($4,trigger_config), schedule=COALESCE($5,schedule) WHERE id=$6',
-    [name, branch, stages ? JSON.stringify(stages) : null, trigger_config ? JSON.stringify(trigger_config) : null, schedule, req.params.id]
+    'UPDATE pipelines SET name=COALESCE($1,name), branch=COALESCE($2,branch), stages=COALESCE($3,stages), trigger_config=COALESCE($4,trigger_config), schedule=COALESCE($5,schedule), repo_full_name=COALESCE($6,repo_full_name) WHERE id=$7',
+    [name, branch, stages ? JSON.stringify(stages) : null, trigger_config ? JSON.stringify(trigger_config) : null, schedule, repo_full_name, req.params.id]
   );
   const row = await queryOne('SELECT * FROM pipelines WHERE id=$1', [req.params.id]);
   res.json(row);
@@ -52,41 +53,42 @@ router.delete('/:id', async (req, res) => {
   res.json({ ok: true });
 });
 
-// Trigger a pipeline run
+// Trigger a real pipeline run (uses executor)
 router.post('/:id/run', async (req, res) => {
   const pipe = await queryOne('SELECT * FROM pipelines WHERE id=$1', [req.params.id]);
   if (!pipe) return res.status(404).json({ error: 'Pipeline not found' });
 
-  // Compute next run number
-  const lastRun = await queryOne('SELECT number FROM pipeline_runs WHERE pipeline_id=$1 ORDER BY run_timestamp DESC LIMIT 1', [pipe.id]);
-  const lastNum = lastRun ? parseInt(lastRun.number.replace('#', ''), 10) : 0;
-  const runNumber = `#${lastNum + 1}`;
-  const runId = `r-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-  const commit = Math.random().toString(36).slice(2, 9);
-  const now = Date.now();
+  try {
+    const run = await executePipeline(pipe, {
+      commit: req.body.commit,
+      branch: req.body.branch || pipe.branch,
+      triggeredBy: req.body.by || 'operator',
+      message: req.body.message || 'manual trigger',
+    });
+    res.status(201).json(run);
+  } catch (err) {
+    console.error('Pipeline execution error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
-  // Build stage results
-  const stages = pipe.stages || [];
-  const stageResults = stages.map(s => ({
-    name: s.name, status: 'passed',
-    duration: `${Math.floor(Math.random() * 90 + 10)}s`,
-    logs: [`${s.name} completed successfully`],
-  }));
+// Cancel a running pipeline
+router.post('/:pipeId/runs/:runId/cancel', async (req, res) => {
+  const cancelled = cancelRun(req.params.runId);
+  if (cancelled) {
+    await execute('UPDATE pipeline_runs SET status=$1 WHERE id=$2', ['cancelled', req.params.runId]);
+    broadcast('pipeline:finished', { runId: req.params.runId, pipelineId: req.params.pipeId, status: 'cancelled' });
+    res.json({ ok: true });
+  } else {
+    res.status(404).json({ error: 'Run not found or already completed' });
+  }
+});
 
-  await execute(
-    'INSERT INTO pipeline_runs (id,pipeline_id,number,commit_hash,message,status,duration,time,run_timestamp,triggered_by,stage_results) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
-    [runId, pipe.id, runNumber, commit, req.body.message || 'manual trigger', 'passed', '3m 12s', 'Just now', now, req.body.by || 'operator', JSON.stringify(stageResults)]
-  );
-  await execute('UPDATE pipelines SET last_run=$1, last_run_time=$2 WHERE id=$3', ['passed', 'Just now', pipe.id]);
-
-  // Add activity
-  await execute('INSERT INTO activity (event,type,activity_timestamp) VALUES ($1,$2,$3)',
-    [`Pipeline "${pipe.name}" ${runNumber} completed`, 'pipeline', now]);
-
-  const run = { id: runId, number: runNumber, commit, msg: req.body.message || 'manual trigger', status: 'passed', duration: '3m 12s', time: 'Just now', timestamp: now, by: req.body.by || 'operator', stageResults };
-  broadcast('pipeline:run', { pipelineId: pipe.id, run });
-  broadcast('activity:new', { event: `Pipeline "${pipe.name}" ${runNumber} completed`, type: 'pipeline', timestamp: now });
-  res.status(201).json(run);
+// Get logs for a specific run
+router.get('/:pipeId/runs/:runId/logs', async (req, res) => {
+  const run = await queryOne('SELECT * FROM pipeline_runs WHERE id=$1', [req.params.runId]);
+  if (!run) return res.status(404).json({ error: 'Run not found' });
+  res.json({ stages: run.stage_results || [] });
 });
 
 export default router;

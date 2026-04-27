@@ -57,6 +57,18 @@ CREATE TABLE IF NOT EXISTS connected_repos (
   webhook_id BIGINT, webhook_secret TEXT, connected_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT * 1000
 );
 ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS repo_full_name TEXT;
+ALTER TABLE services ADD COLUMN IF NOT EXISTS health_url TEXT;
+CREATE TABLE IF NOT EXISTS health_checks (
+  id SERIAL PRIMARY KEY, service_id TEXT NOT NULL,
+  status TEXT, response_time INTEGER, status_code INTEGER,
+  checked_at BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_health_checks_service ON health_checks(service_id, checked_at DESC);
+CREATE TABLE IF NOT EXISTS cloud_connectors (
+  id TEXT PRIMARY KEY, provider TEXT NOT NULL,
+  name TEXT NOT NULL, region TEXT, credentials JSONB,
+  status TEXT DEFAULT 'connected', created_at BIGINT
+);
 `;
 
 export async function initDb() {

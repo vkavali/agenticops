@@ -7,6 +7,7 @@ import { initDb } from './db.js';
 import { seed } from './seed.js';
 import { addClient } from './sse.js';
 import { startSimulation } from './simulation.js';
+import { startMonitoring } from './monitor.js';
 import servicesRouter from './routes/services.js';
 import pipelinesRouter from './routes/pipelines.js';
 import deploymentsRouter from './routes/deployments.js';
@@ -15,6 +16,8 @@ import infrastructureRouter from './routes/infrastructure.js';
 import settingsRouter from './routes/settings.js';
 import activityRouter from './routes/activity.js';
 import githubRouter from './routes/github.js';
+import metricsRouter from './routes/metrics.js';
+import cloudRouter from './routes/cloud.js';
 
 dotenv.config();
 
@@ -34,6 +37,8 @@ app.use('/api/infrastructure', infrastructureRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/activity', activityRouter);
 app.use('/api/github', githubRouter);
+app.use('/api/metrics', metricsRouter);
+app.use('/api/cloud', cloudRouter);
 
 // SSE endpoint
 app.get('/api/events', (req, res) => { addClient(res); });
@@ -54,6 +59,7 @@ async function start() {
     await initDb();
     await seed();
     startSimulation();
+    startMonitoring();
     app.listen(PORT, '0.0.0.0', () => {
       console.log(`✓ AgenticOps API running on port ${PORT}`);
     });

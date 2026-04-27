@@ -83,6 +83,18 @@ const api = {
     connectRepo: (owner, repo) => request('POST', `/api/github/repos/${owner}/${repo}/connect`),
     disconnectRepo: (owner, repo) => request('DELETE', `/api/github/repos/${owner}/${repo}/disconnect`),
   },
+
+  // Metrics
+  metrics: {
+    serviceHealth: (serviceId, range = '1h') => request('GET', `/api/metrics/${serviceId}?range=${range}`),
+  },
+
+  // Cloud Connectors
+  cloud: {
+    list: () => request('GET', '/api/cloud'),
+    connect: (data) => request('POST', '/api/cloud', data),
+    disconnect: (id) => request('DELETE', `/api/cloud/${id}`),
+  },
 };
 
 // ── SSE Connection ──
