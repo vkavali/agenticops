@@ -4,11 +4,11 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"vite\" \"node --watch server/index.js\"",
-    "server": "node server/index.js",
+    "dev": "concurrently \"vite\" \"bun --watch server/index.js\"",
+    "server": "bun server/index.js",
     "build": "vite build",
-    "start": "node server/index.js",
-    "seed": "node server/seed.js",
+    "start": "bun server/index.js",
+    "seed": "bun server/seed.js",
     "lint": "eslint .",
     "preview": "vite preview"
   },
@@ -35,8 +35,5 @@
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.5.0",
     "vite": "^8.0.10"
-  },
-  "engines": {
-    "node": ">=20"
   }
 }

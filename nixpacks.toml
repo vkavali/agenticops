@@ -1,11 +1,8 @@
 [phases.setup]
-nixPkgs = ["...", "gcc", "gnumake", "python3"]
+nixPkgs = ["...", "bun"]
 
 [phases.build]
-cmds = ["npm run build"]
+cmds = ["bun install", "bun run build"]
 
 [start]
-cmd = "npm run start"
-
-[variables]
-NIXPACKS_NODE_VERSION = "20"
+cmd = "bun server/index.js"
