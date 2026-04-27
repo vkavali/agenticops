@@ -47,6 +47,16 @@ CREATE TABLE IF NOT EXISTS activity (
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value JSONB NOT NULL);
 CREATE TABLE IF NOT EXISTS app_state (key TEXT PRIMARY KEY, value JSONB NOT NULL);
+CREATE TABLE IF NOT EXISTS github_connections (
+  id SERIAL PRIMARY KEY, access_token TEXT NOT NULL, github_user TEXT,
+  github_avatar TEXT, scopes TEXT, created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT * 1000
+);
+CREATE TABLE IF NOT EXISTS connected_repos (
+  id SERIAL PRIMARY KEY, github_connection_id INTEGER REFERENCES github_connections(id),
+  repo_full_name TEXT NOT NULL UNIQUE, repo_url TEXT, default_branch TEXT DEFAULT 'main',
+  webhook_id BIGINT, webhook_secret TEXT, connected_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT * 1000
+);
+ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS repo_full_name TEXT;
 `;
 
 export async function initDb() {

@@ -73,6 +73,16 @@ const api = {
 
   // Health
   health: () => request('GET', '/api/health'),
+
+  // GitHub
+  github: {
+    authorize: () => request('GET', '/api/github/authorize'),
+    status: () => request('GET', '/api/github/status'),
+    disconnect: () => request('DELETE', '/api/github/disconnect'),
+    repos: (page = 1) => request('GET', `/api/github/repos?page=${page}`),
+    connectRepo: (owner, repo) => request('POST', `/api/github/repos/${owner}/${repo}/connect`),
+    disconnectRepo: (owner, repo) => request('DELETE', `/api/github/repos/${owner}/${repo}/disconnect`),
+  },
 };
 
 // ── SSE Connection ──

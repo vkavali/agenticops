@@ -14,6 +14,7 @@ import incidentsRouter from './routes/incidents.js';
 import infrastructureRouter from './routes/infrastructure.js';
 import settingsRouter from './routes/settings.js';
 import activityRouter from './routes/activity.js';
+import githubRouter from './routes/github.js';
 
 dotenv.config();
 
@@ -32,6 +33,7 @@ app.use('/api/incidents', incidentsRouter);
 app.use('/api/infrastructure', infrastructureRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/activity', activityRouter);
+app.use('/api/github', githubRouter);
 
 // SSE endpoint
 app.get('/api/events', (req, res) => { addClient(res); });
