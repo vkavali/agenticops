@@ -1,9 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   Plus, Play, CheckCircle2, XCircle, Clock, GitBranch, Trash2, ChevronRight, ChevronDown,
   Code, Shield, Rocket, TestTube, Eye, X, Save, FileCode2, Settings2, History, Terminal,
-  Pause, RotateCcw, Timer, Webhook, Calendar
+  Pause, RotateCcw, Timer, Webhook, Calendar, GripVertical, Pencil
 } from 'lucide-react';
+import { useApp, generateId } from './store';
+import ConfirmDialog from './components/ConfirmDialog';
 
 const STAGE_PALETTE = [
   { type: 'build', label: 'Build', icon: Code, color: 'bg-blue-50', borderColor: 'border-blue-300', textColor: 'text-blue-700' },
@@ -14,79 +16,6 @@ const STAGE_PALETTE = [
   { type: 'script', label: 'Custom Script', icon: FileCode2, color: 'bg-gray-50', borderColor: 'border-gray-300', textColor: 'text-gray-700' },
 ];
 
-const STAGE_DEFAULTS = {
-  build: { name: 'Build', image: 'node:20-alpine', commands: ['npm ci', 'npm run build'], timeout: '10m' },
-  test: { name: 'Unit Tests', image: 'node:20-alpine', commands: ['npm test -- --coverage'], timeout: '15m' },
-  security: { name: 'Security Scan', image: 'aquasec/trivy:latest', commands: ['trivy fs --severity HIGH,CRITICAL .'], timeout: '5m' },
-  deploy: { name: 'Deploy', image: 'hashicorp/terraform:latest', commands: ['terraform init', 'terraform apply -auto-approve'], timeout: '20m', env: 'staging' },
-  approval: { name: 'Manual Approval', approvers: ['ops-team'], timeout: '1h' },
-  script: { name: 'Custom Script', image: 'alpine:latest', commands: ['echo "Hello"'], timeout: '5m' },
-};
-
-const PIPELINES_DATA = [
-  {
-    id: 'pipe-1', name: 'api-service / deploy', branch: 'main', lastRun: 'passed', lastRunTime: '8m ago',
-    trigger: { type: 'push', branch: 'main' }, schedule: null,
-    stages: [
-      { id: 's1', type: 'build', ...STAGE_DEFAULTS.build },
-      { id: 's2', type: 'test', ...STAGE_DEFAULTS.test },
-      { id: 's3', type: 'security', ...STAGE_DEFAULTS.security },
-      { id: 's4', type: 'deploy', name: 'Deploy Staging', ...STAGE_DEFAULTS.deploy },
-      { id: 's5', type: 'approval', ...STAGE_DEFAULTS.approval },
-      { id: 's6', type: 'deploy', name: 'Deploy Production', ...STAGE_DEFAULTS.deploy, env: 'production' },
-    ],
-    runs: [
-      { id: 'r-1', number: '#47', commit: 'a8f3c21', msg: 'fix: POST handler memory', status: 'passed', duration: '4m 18s', time: '8m ago', by: 'ARC-R', stageResults: [
-        { name: 'Build', status: 'passed', duration: '34s', logs: ['> npm ci\n✓ 847 packages installed\n> npm run build\n✓ Build completed in 12.4s\nOutput: dist/ (2.3MB)'] },
-        { name: 'Unit Tests', status: 'passed', duration: '1m 12s', logs: ['> npm test -- --coverage\n\nTest Suites: 24 passed, 24 total\nTests:       142 passed, 142 total\nCoverage:    87.3%\n\n✓ All tests passed'] },
-        { name: 'Security Scan', status: 'passed', duration: '22s', logs: ['> trivy fs --severity HIGH,CRITICAL .\n\nTotal: 0 vulnerabilities\n✓ No HIGH or CRITICAL vulnerabilities found'] },
-        { name: 'Deploy Staging', status: 'passed', duration: '1m 45s', logs: ['> terraform init\n✓ Initialized\n> terraform apply\nApply complete! Resources: 2 added, 1 changed\n✓ Deployed to staging'] },
-        { name: 'Manual Approval', status: 'passed', duration: '15s', logs: ['Approved by: ARC-R Engine (auto-approval)'] },
-        { name: 'Deploy Production', status: 'passed', duration: '1m 50s', logs: ['> terraform apply\nApply complete! Resources: 2 added, 1 changed\n✓ Deployed to production\nHealth check: 200 OK'] },
-      ]},
-      { id: 'r-2', number: '#46', commit: 'f2b8d09', msg: 'feat: user preferences endpoint', status: 'passed', duration: '4m 02s', time: '45m ago', by: 'v.kavali', stageResults: [
-        { name: 'Build', status: 'passed', duration: '31s', logs: ['Build completed'] },
-        { name: 'Unit Tests', status: 'passed', duration: '1m 08s', logs: ['142 tests passed'] },
-        { name: 'Security Scan', status: 'passed', duration: '20s', logs: ['0 vulnerabilities'] },
-        { name: 'Deploy Staging', status: 'passed', duration: '1m 40s', logs: ['Deployed to staging'] },
-        { name: 'Manual Approval', status: 'passed', duration: '12m', logs: ['Approved by: v.kavali'] },
-        { name: 'Deploy Production', status: 'passed', duration: '1m 43s', logs: ['Deployed to production'] },
-      ]},
-      { id: 'r-3', number: '#45', commit: 'b1c4e88', msg: 'refactor: handler middleware', status: 'passed', duration: '3m 55s', time: '3h ago', by: 'ci-bot', stageResults: [] },
-    ],
-  },
-  {
-    id: 'pipe-2', name: 'frontend / build-test', branch: 'main', lastRun: 'failed', lastRunTime: '1h ago',
-    trigger: { type: 'push', branch: 'main' }, schedule: '0 */6 * * *',
-    stages: [
-      { id: 's1', type: 'build', ...STAGE_DEFAULTS.build, commands: ['npm ci', 'npm run build:prod'] },
-      { id: 's2', type: 'test', ...STAGE_DEFAULTS.test },
-      { id: 's3', type: 'deploy', name: 'Deploy CDN', ...STAGE_DEFAULTS.deploy },
-    ],
-    runs: [
-      { id: 'r-4', number: '#31', commit: 'c4e1a77', msg: 'chore: bundle optimization', status: 'failed', duration: '2m 44s', time: '1h ago', by: 'v.kavali', stageResults: [
-        { name: 'Build', status: 'passed', duration: '38s', logs: ['Build completed'] },
-        { name: 'Unit Tests', status: 'failed', duration: '1m 06s', logs: ['FAIL src/components/Dashboard.test.tsx\n\n● Dashboard › renders health score\n  Expected: 94.2\n  Received: undefined\n\nTest Suites: 1 failed, 23 passed, 24 total\nTests: 3 failed, 139 passed, 142 total\n\n✗ Tests failed'] },
-        { name: 'Deploy CDN', status: 'skipped', duration: '—', logs: ['Skipped: previous stage failed'] },
-      ]},
-      { id: 'r-5', number: '#30', commit: 'e9a2f11', msg: 'feat: dark mode support', status: 'passed', duration: '3m 10s', time: '6h ago', by: 'v.kavali', stageResults: [] },
-    ],
-  },
-  {
-    id: 'pipe-3', name: 'worker-service / deploy', branch: 'main', lastRun: 'passed', lastRunTime: '3h ago',
-    trigger: { type: 'tag', pattern: 'v*' }, schedule: null,
-    stages: [
-      { id: 's1', type: 'build', ...STAGE_DEFAULTS.build, image: 'golang:1.22' },
-      { id: 's2', type: 'test', ...STAGE_DEFAULTS.test, image: 'golang:1.22', commands: ['go test ./...'] },
-      { id: 's3', type: 'security', ...STAGE_DEFAULTS.security },
-      { id: 's4', type: 'deploy', ...STAGE_DEFAULTS.deploy },
-    ],
-    runs: [
-      { id: 'r-6', number: '#19', commit: 'b9d2e44', msg: 'perf: batch processing', status: 'passed', duration: '5m 02s', time: '3h ago', by: 'ci-bot', stageResults: [] },
-    ],
-  },
-];
-
 const RUN_STATUS = {
   passed: { icon: CheckCircle2, color: 'text-green-600', bg: 'bg-green-500' },
   failed: { icon: XCircle, color: 'text-red-600', bg: 'bg-red-500' },
@@ -95,36 +24,52 @@ const RUN_STATUS = {
 };
 
 export default function PipelinesView() {
-  const [pipelines, setPipelines] = useState(PIPELINES_DATA);
-  const [selPipeId, setSelPipeId] = useState(PIPELINES_DATA[0].id);
-  const [stages, setStages] = useState(PIPELINES_DATA[0].stages);
+  const {
+    pipelines, updatePipeline, addPipelineRun, addPipeline, deletePipeline,
+    addDeployment, addActivity, toast, STAGE_DEFAULTS,
+  } = useApp();
+
+  const [selPipeId, setSelPipeId] = useState(pipelines[0]?.id);
+  const [stages, setStages] = useState(pipelines[0]?.stages || []);
   const [selectedStage, setSelectedStage] = useState(null);
   const [showYaml, setShowYaml] = useState(false);
-  const [notification, setNotification] = useState(null);
   const [isRunning, setIsRunning] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
-  const [activePanel, setActivePanel] = useState('builder'); // builder | runs | config
+  const [activePanel, setActivePanel] = useState('builder');
   const [expandedRun, setExpandedRun] = useState(null);
   const [expandedStageLog, setExpandedStageLog] = useState(null);
   const [runStageProgress, setRunStageProgress] = useState([]);
+  const [editingName, setEditingName] = useState(false);
+  const [nameInput, setNameInput] = useState('');
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [dragIdx, setDragIdx] = useState(null);
+  const nameRef = useRef(null);
 
-  const notify = (msg) => { setNotification(msg); setTimeout(() => setNotification(null), 2500); };
   const selPipe = pipelines.find(p => p.id === selPipeId);
 
+  // Sync stages when pipeline changes
+  useEffect(() => {
+    if (selPipe) setStages(selPipe.stages);
+  }, [selPipeId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const selectPipeline = (p) => { setSelPipeId(p.id); setStages(p.stages); setSelectedStage(null); setShowYaml(false); setActivePanel('builder'); };
-  const addStage = (type) => { setStages([...stages, { id: `s${Date.now()}`, type, ...STAGE_DEFAULTS[type] }]); };
+  const addStage = (type) => { setStages([...stages, { id: generateId('s-'), type, ...STAGE_DEFAULTS[type] }]); };
   const removeStage = (id) => { setStages(stages.filter(s => s.id !== id)); if (selectedStage?.id === id) setSelectedStage(null); };
 
-  const handleSave = () => { setIsSaved(true); setPipelines(p => p.map(pp => pp.id === selPipeId ? { ...pp, stages } : pp)); notify('Pipeline saved'); setTimeout(() => setIsSaved(false), 2000); };
+  const handleSave = () => {
+    setIsSaved(true);
+    updatePipeline(selPipeId, { stages });
+    toast('Pipeline saved', 'success');
+    setTimeout(() => setIsSaved(false), 2000);
+  };
 
   const handleRun = () => {
-    if (isRunning) return;
+    if (isRunning || !selPipe) return;
     setIsRunning(true);
     setActivePanel('runs');
     const stageNames = stages.map(s => s.name);
     setRunStageProgress([]);
 
-    // Simulate stage-by-stage execution
     stageNames.forEach((name, i) => {
       setTimeout(() => {
         setRunStageProgress(prev => [...prev, { name, status: 'running', duration: '—', logs: [`> Executing ${name}...`] }]);
@@ -136,17 +81,68 @@ export default function PipelinesView() {
 
     setTimeout(() => {
       setIsRunning(false);
-      const newRun = { id: `r-${Date.now()}`, number: `#${48 + Math.floor(Math.random() * 10)}`, commit: Math.random().toString(36).slice(2,9), msg: 'triggered manually', status: 'passed', duration: `${stageNames.length}m ${Math.floor(Math.random()*50)}s`, time: 'Just now', by: 'operator', stageResults: stageNames.map(n => ({ name: n, status: 'passed', duration: `${(Math.random()*60+10).toFixed(0)}s`, logs: [`✓ ${n} completed`] })) };
-      setPipelines(p => p.map(pp => pp.id === selPipeId ? { ...pp, lastRun: 'passed', lastRunTime: 'Just now', runs: [newRun, ...pp.runs] } : pp));
+      const runNum = selPipe.runs.length > 0 ? `#${parseInt(selPipe.runs[0].number.replace('#',''), 10) + 1}` : '#1';
+      const commit = Math.random().toString(36).slice(2, 9);
+      const newRun = {
+        id: generateId('r-'), number: runNum, commit, msg: 'triggered manually',
+        status: 'passed', duration: `${stageNames.length}m ${Math.floor(Math.random()*50)}s`,
+        time: 'Just now', timestamp: Date.now(), by: 'operator',
+        stageResults: stageNames.map(n => ({ name: n, status: 'passed', duration: `${(Math.random()*60+10).toFixed(0)}s`, logs: [`✓ ${n} completed`] }))
+      };
+      addPipelineRun(selPipeId, newRun);
       setRunStageProgress([]);
-      notify('Pipeline completed successfully');
+      toast('Pipeline completed successfully', 'success');
+
+      // Create actual deployment
+      const svc = selPipe.name.split('/')[0].trim();
+      addDeployment({
+        service: svc, commit, msg: `Pipeline ${selPipe.name} ${runNum}`, by: 'operator',
+        version: `v${Math.floor(Math.random()*4)+1}.${Math.floor(Math.random()*9)}.${Math.floor(Math.random()*99)}`,
+        environments: { development: { status: 'passed', time: 'Just now', timestamp: Date.now() } },
+      });
+      addActivity(`Pipeline ${selPipe.name} ${runNum} completed successfully`, 'pipeline');
     }, stageNames.length * 1200 + 1200);
   };
 
-  const addPipeline = () => {
-    const newP = { id: `pipe-${Date.now()}`, name: `new-pipeline-${pipelines.length + 1}`, branch: 'main', lastRun: 'passed', lastRunTime: 'new', trigger: { type: 'push', branch: 'main' }, schedule: null, stages: [], runs: [] };
-    setPipelines([...pipelines, newP]); setSelPipeId(newP.id); setStages([]); notify('Pipeline created');
+  const handleAddPipeline = () => {
+    const p = addPipeline({ name: `new-pipeline-${pipelines.length + 1}` });
+    setSelPipeId(p.id);
+    setStages([]);
   };
+
+  const handleDeletePipeline = () => {
+    if (pipelines.length <= 1) { toast('Cannot delete the last pipeline', 'warning'); return; }
+    setConfirmDelete(selPipeId);
+  };
+
+  const confirmDeletePipeline = () => {
+    const next = pipelines.find(p => p.id !== confirmDelete);
+    deletePipeline(confirmDelete);
+    if (next) { setSelPipeId(next.id); setStages(next.stages); }
+    setConfirmDelete(null);
+  };
+
+  const startRename = () => { setEditingName(true); setNameInput(selPipe?.name || ''); setTimeout(() => nameRef.current?.focus(), 50); };
+  const finishRename = () => { if (nameInput.trim()) { updatePipeline(selPipeId, { name: nameInput.trim() }); } setEditingName(false); };
+
+  // Stage editing
+  const updateStageField = (field, value) => {
+    setStages(prev => prev.map(s => s.id === selectedStage?.id ? { ...s, [field]: value } : s));
+    setSelectedStage(prev => prev ? { ...prev, [field]: value } : prev);
+  };
+
+  // Stage drag reorder
+  const handleDragStart = (idx) => setDragIdx(idx);
+  const handleDragOver = (e, idx) => {
+    e.preventDefault();
+    if (dragIdx === null || dragIdx === idx) return;
+    const newStages = [...stages];
+    const [moved] = newStages.splice(dragIdx, 1);
+    newStages.splice(idx, 0, moved);
+    setStages(newStages);
+    setDragIdx(idx);
+  };
+  const handleDragEnd = () => setDragIdx(null);
 
   const generateYaml = () => {
     let y = `# ${selPipe?.name}\n# Auto-generated by AgenticOps\n\npipeline:\n  name: "${selPipe?.name}"\n  trigger:\n    type: ${selPipe?.trigger?.type}\n    branch: ${selPipe?.trigger?.branch || selPipe?.trigger?.pattern || 'main'}\n`;
@@ -156,15 +152,17 @@ export default function PipelinesView() {
     return y;
   };
 
+  if (!selPipe) return <div className="flex-1 flex items-center justify-center text-gray-400 text-sm">No pipelines found</div>;
+
   return (
     <div className="flex h-full relative">
-      {notification && <div className="fixed top-4 right-4 z-50 border-2 border-gray-900 bg-white px-4 py-3 shadow-[4px_4px_0_0_#111827] text-xs font-bold text-gray-900 animate-pulse">{notification}</div>}
+      {confirmDelete && <ConfirmDialog title="Delete Pipeline" message={`Are you sure you want to delete "${selPipe?.name}"? This action cannot be undone. All run history will be lost.`} confirmLabel="Delete" onConfirm={confirmDeletePipeline} onCancel={() => setConfirmDelete(null)} />}
 
       {/* Pipeline List */}
       <div className="w-[240px] border-r border-gray-300 bg-white shrink-0 flex flex-col">
         <div className="p-4 border-b border-gray-200 flex items-center justify-between">
           <h2 className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Pipelines</h2>
-          <button onClick={addPipeline} className="p-1 border border-gray-300 hover:bg-gray-50 cursor-pointer"><Plus size={12} /></button>
+          <button onClick={handleAddPipeline} className="p-1 border border-gray-300 hover:bg-gray-50 cursor-pointer"><Plus size={12} /></button>
         </div>
         <div className="flex-1 overflow-y-auto hidden-scrollbar">
           {pipelines.map(p => {
@@ -195,9 +193,15 @@ export default function PipelinesView() {
         {/* Toolbar */}
         <div className="h-12 border-b border-gray-200 flex items-center justify-between px-4 bg-white shrink-0">
           <div className="flex items-center space-x-2">
-            <h3 className="text-xs font-bold text-gray-900">{selPipe?.name}</h3>
+            {editingName ? (
+              <input ref={nameRef} value={nameInput} onChange={e => setNameInput(e.target.value)} onBlur={finishRename} onKeyDown={e => { if (e.key === 'Enter') finishRename(); if (e.key === 'Escape') setEditingName(false); }}
+                className="text-xs font-bold text-gray-900 border-b-2 border-gray-900 outline-none bg-transparent px-1 py-0.5" />
+            ) : (
+              <h3 className="text-xs font-bold text-gray-900 flex items-center cursor-pointer group" onClick={startRename}>
+                {selPipe.name} <Pencil size={10} className="ml-1.5 text-gray-300 group-hover:text-gray-600" />
+              </h3>
+            )}
             <span className="text-[9px] font-mono text-gray-400 bg-gray-100 px-1.5 py-0.5 border border-gray-200">{stages.length} stages</span>
-            {/* Panel Tabs */}
             <div className="flex items-center ml-4 border border-gray-200">
               {[{ id: 'builder', label: 'Builder', icon: Code }, { id: 'runs', label: 'Runs', icon: History }, { id: 'config', label: 'Config', icon: Settings2 }].map(t => {
                 const TIcon = t.icon;
@@ -251,10 +255,12 @@ export default function PipelinesView() {
                   {stages.map((stage, i) => {
                     const pal = STAGE_PALETTE.find(p => p.type === stage.type); const Icon = pal.icon; const isSelected = selectedStage?.id === stage.id;
                     return (
-                      <div key={stage.id} className="flex items-center shrink-0">
+                      <div key={stage.id} className="flex items-center shrink-0" draggable onDragStart={() => handleDragStart(i)} onDragOver={(e) => handleDragOver(e, i)} onDragEnd={handleDragEnd}>
                         <div onClick={() => setSelectedStage(isSelected ? null : stage)}
-                          className={`w-[160px] border bg-white cursor-pointer transition-all relative ${isSelected ? 'border-gray-900 shadow-[4px_4px_0_0_#111827] -translate-x-[2px] -translate-y-[2px]' : `${pal.borderColor} shadow-[1px_1px_0_0_#111827] hover:shadow-[2px_2px_0_0_#111827] hover:-translate-x-[1px] hover:-translate-y-[1px]`}`}>
-                          <div className={`h-1.5 w-full ${pal.color} border-b ${pal.borderColor}`} />
+                          className={`w-[160px] border bg-white cursor-pointer transition-all relative ${isSelected ? 'border-gray-900 shadow-[4px_4px_0_0_#111827] -translate-x-[2px] -translate-y-[2px]' : `${pal.borderColor} shadow-[1px_1px_0_0_#111827] hover:shadow-[2px_2px_0_0_#111827] hover:-translate-x-[1px] hover:-translate-y-[1px]`} ${dragIdx === i ? 'opacity-50' : ''}`}>
+                          <div className={`h-1.5 w-full ${pal.color} border-b ${pal.borderColor} flex items-center justify-end px-1`}>
+                            <GripVertical size={8} className="text-gray-300 cursor-grab" />
+                          </div>
                           <div className="p-3">
                             <div className="flex items-center justify-between mb-1">
                               <div className="flex items-center space-x-1.5">
@@ -287,7 +293,6 @@ export default function PipelinesView() {
         {/* ═══ RUN HISTORY PANEL ═══ */}
         {activePanel === 'runs' && (
           <div className="flex-1 overflow-y-auto hidden-scrollbar bg-[#F9FAFB] p-6">
-            {/* Live progress during a run */}
             {isRunning && runStageProgress.length > 0 && (
               <div className="border-2 border-blue-400 bg-white mb-4 shadow-[3px_3px_0_0_#2563EB]">
                 <div className="p-3 bg-blue-50 border-b border-blue-200 flex items-center justify-between">
@@ -307,8 +312,6 @@ export default function PipelinesView() {
                 </div>
               </div>
             )}
-
-            {/* Past Runs */}
             <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-3">Run History</div>
             <div className="space-y-2">
               {(selPipe?.runs || []).map(run => {
@@ -334,17 +337,11 @@ export default function PipelinesView() {
                         {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                       </div>
                     </div>
-
                     {isExpanded && run.stageResults.length > 0 && (
                       <div className="border-t border-gray-200 bg-gray-50">
-                        {/* Stage progress bar */}
                         <div className="px-3 pt-3 flex items-center space-x-1">
-                          {run.stageResults.map((sr, i) => {
-                            const sSt = RUN_STATUS[sr.status] || RUN_STATUS.passed;
-                            return <div key={i} className={`flex-1 h-2 ${sSt.bg}`} />;
-                          })}
+                          {run.stageResults.map((sr, i) => { const sSt = RUN_STATUS[sr.status] || RUN_STATUS.passed; return <div key={i} className={`flex-1 h-2 ${sSt.bg}`} />; })}
                         </div>
-                        {/* Stage list */}
                         <div className="p-3 space-y-1">
                           {run.stageResults.map((sr, i) => {
                             const sSt = RUN_STATUS[sr.status] || RUN_STATUS.passed; const SIcon = sSt.icon;
@@ -393,21 +390,26 @@ export default function PipelinesView() {
                 <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-3">Trigger</div>
                 <div className="flex space-x-2">
                   {['push', 'pull_request', 'tag', 'manual'].map(t => (
-                    <button key={t} onClick={() => { setPipelines(p => p.map(pp => pp.id === selPipeId ? { ...pp, trigger: { ...pp.trigger, type: t } } : pp)); notify(`Trigger → ${t}`); }}
+                    <button key={t} onClick={() => { updatePipeline(selPipeId, p => ({ ...p, trigger: { ...p.trigger, type: t } })); toast(`Trigger → ${t}`); }}
                       className={`flex-1 text-[10px] font-bold uppercase tracking-widest py-1.5 border cursor-pointer text-center ${selPipe.trigger?.type === t ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}>{t}</button>
                   ))}
                 </div>
               </div>
               <div className="border border-gray-300 bg-white p-4 shadow-[1px_1px_0_0_#111827]">
                 <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Branch Filter</div>
-                <div className="text-xs font-mono text-gray-700 bg-gray-50 border border-gray-200 px-3 py-2">{selPipe.trigger?.branch || selPipe.trigger?.pattern || 'main'}</div>
+                <input
+                  type="text"
+                  value={selPipe.trigger?.branch || selPipe.trigger?.pattern || 'main'}
+                  onChange={e => updatePipeline(selPipeId, p => ({ ...p, trigger: { ...p.trigger, branch: e.target.value } }))}
+                  className="w-full text-xs font-mono text-gray-700 bg-gray-50 border border-gray-200 px-3 py-2 focus:outline-none focus:border-gray-900"
+                />
               </div>
               <div className="border border-gray-300 bg-white p-4 shadow-[1px_1px_0_0_#111827]">
                 <div className="flex items-center justify-between mb-2">
                   <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Schedule (Cron)</div>
-                  <ToggleSmall value={!!selPipe.schedule} onChange={() => { setPipelines(p => p.map(pp => pp.id === selPipeId ? { ...pp, schedule: pp.schedule ? null : '0 */6 * * *' } : pp)); notify(selPipe.schedule ? 'Schedule disabled' : 'Schedule enabled'); }} />
+                  <ToggleSmall value={!!selPipe.schedule} onChange={() => { updatePipeline(selPipeId, p => ({ ...p, schedule: p.schedule ? null : '0 */6 * * *' })); toast(selPipe.schedule ? 'Schedule disabled' : 'Schedule enabled'); }} />
                 </div>
-                {selPipe.schedule && <div className="text-xs font-mono text-gray-700 bg-gray-50 border border-gray-200 px-3 py-2">{selPipe.schedule}</div>}
+                {selPipe.schedule && <input type="text" value={selPipe.schedule} onChange={e => updatePipeline(selPipeId, { schedule: e.target.value })} className="w-full text-xs font-mono text-gray-700 bg-gray-50 border border-gray-200 px-3 py-2 focus:outline-none focus:border-gray-900" />}
               </div>
               <div className="border border-gray-300 bg-white p-4 shadow-[1px_1px_0_0_#111827]">
                 <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Notification on Failure</div>
@@ -417,14 +419,14 @@ export default function PipelinesView() {
                 <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Concurrency</div>
                 <div className="text-xs text-gray-700">Max <span className="font-mono font-bold">1</span> concurrent run. Queue additional triggers.</div>
               </div>
-              <button onClick={() => { setPipelines(p => p.filter(pp => pp.id !== selPipeId)); if (pipelines.length > 1) { const next = pipelines.find(pp => pp.id !== selPipeId); setSelPipeId(next.id); setStages(next.stages); } notify('Pipeline deleted'); }}
+              <button onClick={handleDeletePipeline}
                 className="text-[10px] font-bold text-red-500 border border-red-300 px-3 py-1.5 hover:bg-red-50 cursor-pointer flex items-center"><Trash2 size={10} className="mr-1" /> Delete Pipeline</button>
             </div>
           </div>
         )}
       </div>
 
-      {/* Stage Config Panel (right) */}
+      {/* Stage Config Panel (right) — now fully editable */}
       {selectedStage && activePanel === 'builder' && !showYaml && (
         <div className="w-[280px] bg-white border-l-2 border-gray-900 flex flex-col shadow-[-5px_0_20px_rgba(0,0,0,0.03)] shrink-0">
           {(() => { const pal = STAGE_PALETTE.find(p => p.type === selectedStage.type); const Icon = pal.icon; return (<>
@@ -436,12 +438,43 @@ export default function PipelinesView() {
               <h3 className="text-sm font-bold text-gray-900">{selectedStage.name}</h3>
             </div>
             <div className="flex-1 overflow-y-auto hidden-scrollbar p-4 space-y-4">
-              <CField label="Stage Name" value={selectedStage.name} />
-              {selectedStage.image && <CField label="Container Image" value={selectedStage.image} />}
-              {selectedStage.timeout && <CField label="Timeout" value={selectedStage.timeout} />}
-              {selectedStage.env && <CField label="Environment" value={selectedStage.env} />}
-              {selectedStage.commands && (<div><div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">Commands</div><div className="bg-[#111827] border-2 border-gray-900 p-3 font-mono text-[10px] text-gray-300 space-y-1">{selectedStage.commands.map((c, i) => <div key={i} className="flex"><span className="text-gray-500 mr-2 select-none">$</span>{c}</div>)}</div></div>)}
-              {selectedStage.approvers && (<div><div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">Approvers</div>{selectedStage.approvers.map((a, i) => <div key={i} className="text-xs font-mono text-gray-700 bg-gray-50 border border-gray-200 px-2 py-1 mb-1">{a}</div>)}</div>)}
+              <EditField label="Stage Name" value={selectedStage.name} onChange={v => updateStageField('name', v)} />
+              {selectedStage.image !== undefined && <EditField label="Container Image" value={selectedStage.image} onChange={v => updateStageField('image', v)} />}
+              {selectedStage.timeout !== undefined && <EditField label="Timeout" value={selectedStage.timeout} onChange={v => updateStageField('timeout', v)} />}
+              {selectedStage.env !== undefined && <EditField label="Environment" value={selectedStage.env} onChange={v => updateStageField('env', v)} />}
+              {selectedStage.commands && (
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Commands</div>
+                    <button onClick={() => updateStageField('commands', [...selectedStage.commands, 'echo "new"'])} className="text-[9px] font-bold text-gray-500 hover:text-gray-900 flex items-center cursor-pointer"><Plus size={10} className="mr-0.5" /> Add</button>
+                  </div>
+                  <div className="space-y-1">
+                    {selectedStage.commands.map((c, i) => (
+                      <div key={i} className="flex items-center space-x-1">
+                        <span className="text-[10px] font-mono text-gray-400 shrink-0">$</span>
+                        <input type="text" value={c} onChange={e => { const cmds = [...selectedStage.commands]; cmds[i] = e.target.value; updateStageField('commands', cmds); }}
+                          className="flex-1 text-[10px] font-mono text-gray-900 bg-gray-50 border border-gray-200 px-2 py-1 focus:outline-none focus:border-gray-900" />
+                        <button onClick={() => { const cmds = selectedStage.commands.filter((_, j) => j !== i); updateStageField('commands', cmds); }} className="text-gray-300 hover:text-red-500 cursor-pointer shrink-0"><Trash2 size={9} /></button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {selectedStage.approvers && (
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Approvers</div>
+                    <button onClick={() => updateStageField('approvers', [...selectedStage.approvers, 'new-team'])} className="text-[9px] font-bold text-gray-500 hover:text-gray-900 flex items-center cursor-pointer"><Plus size={10} className="mr-0.5" /> Add</button>
+                  </div>
+                  {selectedStage.approvers.map((a, i) => (
+                    <div key={i} className="flex items-center space-x-1 mb-1">
+                      <input type="text" value={a} onChange={e => { const app = [...selectedStage.approvers]; app[i] = e.target.value; updateStageField('approvers', app); }}
+                        className="flex-1 text-xs font-mono text-gray-700 bg-gray-50 border border-gray-200 px-2 py-1 focus:outline-none focus:border-gray-900" />
+                      <button onClick={() => updateStageField('approvers', selectedStage.approvers.filter((_, j) => j !== i))} className="text-gray-300 hover:text-red-500 cursor-pointer"><Trash2 size={9} /></button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </>); })()}
         </div>
@@ -450,8 +483,14 @@ export default function PipelinesView() {
   );
 }
 
-function CField({ label, value }) {
-  return (<div><div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">{label}</div><div className="text-xs font-mono text-gray-900 bg-gray-50 border border-gray-200 px-3 py-2">{value}</div></div>);
+function EditField({ label, value, onChange }) {
+  return (
+    <div>
+      <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">{label}</div>
+      <input type="text" value={value || ''} onChange={e => onChange(e.target.value)}
+        className="w-full text-xs font-mono text-gray-900 bg-gray-50 border border-gray-200 px-3 py-2 focus:outline-none focus:border-gray-900 transition-colors" />
+    </div>
+  );
 }
 
 function ToggleSmall({ value, onChange }) {

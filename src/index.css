@@ -39,3 +39,74 @@ html, body, #root {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
 }
+
+/* ── Toast slide-in animation ── */
+@keyframes slideIn {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+.animate-slide-in {
+  animation: slideIn 0.2s ease-out;
+}
+
+/* ── Panel slide animation ── */
+@keyframes slideLeft {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+.animate-slide-left {
+  animation: slideLeft 0.3s ease-out;
+}
+
+/* ── Fade-in ── */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in {
+  animation: fadeIn 0.2s ease-out;
+}
+
+/* ── Loading skeleton ── */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, #f3f4f6 25%, #e5e7eb 50%, #f3f4f6 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: 2px;
+}
+
+/* ── Focus styles for accessibility ── */
+:focus-visible {
+  outline: 2px solid #111827;
+  outline-offset: 2px;
+}
+
+button:focus-visible,
+select:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid #111827;
+  outline-offset: 1px;
+}
+
+/* ── Drag over indicator ── */
+.drag-over {
+  border-color: #111827 !important;
+  background-color: #f3f4f6 !important;
+}
+
+/* ── Selection highlight ── */
+::selection {
+  background: #d1d5db;
+  color: #111827;
+}
+
+/* ── Print friendly ── */
+@media print {
+  .no-print { display: none !important; }
+  body { overflow: visible; }
+}
