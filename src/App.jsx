@@ -4,13 +4,22 @@ import {
   CheckCircle2, Globe, Box, Bell, Users,
   X, Fingerprint, ChevronRight, Rocket,
   Settings2, Wrench, GitCommit, FileCode2, Command, LayoutTemplate,
-  BarChart3, ZoomIn, ZoomOut, Maximize2, Search
+  BarChart3, ZoomIn, ZoomOut, Maximize2, Search,
+  DollarSign, ShieldCheck, GitMerge, Boxes, Flag, Target,
 } from 'lucide-react';
 import DashboardView from './DashboardView';
 import IncidentsView from './IncidentsView';
 import PipelinesView from './PipelinesView';
 import DeploymentsView from './DeploymentsView';
 import SettingsView from './SettingsView';
+import CostView from './CostView';
+import ChaosView from './ChaosView';
+import CatalogView from './CatalogView';
+import SecurityView from './SecurityView';
+import GitOpsView from './GitOpsView';
+import DbOpsView from './DbOpsView';
+import FlagsView from './FlagsView';
+import SlosView from './SlosView';
 import ToastContainer from './components/Toast';
 import SearchCommand from './components/SearchCommand';
 import { useApp } from './store';
@@ -95,9 +104,9 @@ export default function App() {
         setSelectedNodeId(null);
         setSearchOpen(false);
       }
-      // Number shortcuts (1-6) when no input is focused
+      // Number shortcuts (1-9) when no input is focused
       if (!e.metaKey && !e.ctrlKey && !e.altKey && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA' && document.activeElement?.tagName !== 'SELECT') {
-        const tabs = ['dashboard', 'pipelines', 'deployments', 'topology', 'incidents', 'settings'];
+        const tabs = ['dashboard', 'pipelines', 'deployments', 'topology', 'incidents', 'flags', 'slos', 'cost', 'catalog'];
         const idx = parseInt(e.key, 10) - 1;
         if (idx >= 0 && idx < tabs.length) {
           setActiveTab(tabs[idx]);
@@ -277,13 +286,21 @@ export default function App() {
             AgenticOps
           </span>
         </div>
-        <nav className="flex-1 py-4 space-y-2 px-3 overflow-hidden">
+        <nav className="flex-1 py-4 space-y-1 px-3 overflow-y-auto hidden-scrollbar">
           <NavItem icon={<BarChart3 size={16} />} label="Dashboard" shortcut="1" active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} />
           <NavItem icon={<LayoutTemplate size={16} />} label="Pipelines" shortcut="2" active={activeTab === 'pipelines'} onClick={() => setActiveTab('pipelines')} />
           <NavItem icon={<Rocket size={16} />} label="Deployments" shortcut="3" active={activeTab === 'deployments'} onClick={() => setActiveTab('deployments')} />
           <NavItem icon={<Network size={16} />} label="Infrastructure" shortcut="4" active={activeTab === 'topology'} onClick={() => setActiveTab('topology')} />
           <NavItem icon={<Activity size={16} />} label="Incidents" shortcut="5" active={activeTab === 'incidents'} onClick={() => setActiveTab('incidents')} />
-          <NavItem icon={<Settings2 size={16} />} label="Settings" shortcut="6" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
+          <NavItem icon={<Flag size={16} />} label="Flags" shortcut="6" active={activeTab === 'flags'} onClick={() => setActiveTab('flags')} />
+          <NavItem icon={<Target size={16} />} label="SLOs" shortcut="7" active={activeTab === 'slos'} onClick={() => setActiveTab('slos')} />
+          <NavItem icon={<DollarSign size={16} />} label="Cost" shortcut="8" active={activeTab === 'cost'} onClick={() => setActiveTab('cost')} />
+          <NavItem icon={<Boxes size={16} />} label="Catalog" shortcut="9" active={activeTab === 'catalog'} onClick={() => setActiveTab('catalog')} />
+          <NavItem icon={<ShieldCheck size={16} />} label="Security" active={activeTab === 'security'} onClick={() => setActiveTab('security')} />
+          <NavItem icon={<Zap size={16} />} label="Chaos" active={activeTab === 'chaos'} onClick={() => setActiveTab('chaos')} />
+          <NavItem icon={<GitMerge size={16} />} label="GitOps" active={activeTab === 'gitops'} onClick={() => setActiveTab('gitops')} />
+          <NavItem icon={<Database size={16} />} label="DB DevOps" active={activeTab === 'dbops'} onClick={() => setActiveTab('dbops')} />
+          <NavItem icon={<Settings2 size={16} />} label="Settings" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
         </nav>
         {/* Search shortcut */}
         <div className="px-3 pb-4 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -356,6 +373,22 @@ export default function App() {
           <div className="flex-1 overflow-hidden"><DeploymentsView /></div>
         ) : activeTab === 'incidents' ? (
           <div className="flex-1 overflow-hidden"><IncidentsView /></div>
+        ) : activeTab === 'flags' ? (
+          <div className="flex-1 overflow-hidden"><FlagsView /></div>
+        ) : activeTab === 'slos' ? (
+          <div className="flex-1 overflow-hidden"><SlosView /></div>
+        ) : activeTab === 'cost' ? (
+          <div className="flex-1 overflow-hidden"><CostView /></div>
+        ) : activeTab === 'catalog' ? (
+          <div className="flex-1 overflow-hidden"><CatalogView /></div>
+        ) : activeTab === 'security' ? (
+          <div className="flex-1 overflow-hidden"><SecurityView /></div>
+        ) : activeTab === 'chaos' ? (
+          <div className="flex-1 overflow-hidden"><ChaosView /></div>
+        ) : activeTab === 'gitops' ? (
+          <div className="flex-1 overflow-hidden"><GitOpsView /></div>
+        ) : activeTab === 'dbops' ? (
+          <div className="flex-1 overflow-hidden"><DbOpsView /></div>
         ) : activeTab === 'settings' ? (
           <div className="flex-1 overflow-hidden"><SettingsView /></div>
         ) : null}

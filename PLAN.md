@@ -148,6 +148,31 @@ Schema + skeleton routes + minimal UI per module. Polish opportunistically.
       CREATE INDEX, etc. Score < 50 → admin-required gate; else
       operator-required gate.
 
+## Frontend tabs (Phase 3 surface)
+
+All eight new modules now have visible tabs in the sidebar with the same
+visual language as the existing views (border-2 black, mono accents):
+
+- **Flags** (⌘6): list + start/pause/resume/rollback rollouts; modal
+  exposes increment %, interval, and SLO auto-pause linkage.
+- **SLOs** (⌘7): list with live SLI / budget / burn columns from the
+  evaluator; create dialog covers availability + latency types.
+- **Cost** (⌘8): anomaly table, idle-resource recommendations,
+  spend-by-service rollup, manual sweep trigger.
+- **Catalog** (⌘9): per-service scorecard cards (SLO / Incidents /
+  Deploys / Security with letter grades + overall grade).
+- **Security**: scan history with severity rollup, findings list with
+  resolve/ignore actions.
+- **Chaos**: experiments with run-request flow, recent runs table,
+  manual abort, create-experiment modal with SLO auto-abort selector.
+- **GitOps**: app list with last-sync status badge, sync-history side
+  panel, register-app modal.
+- **DB DevOps**: SQL submission with live safety analysis (warnings +
+  score), migration history.
+
+Shared primitives in `src/components/views.jsx`: PageHeader, Badge,
+Grade (A-F), MetricCard, EmptyState, fmtUSD/fmtPct/fmtAgo.
+
 ## Cross-cutting work
 
 - [ ] Replace ad-hoc `ALTER TABLE … ADD COLUMN` in `db.js` with a real
