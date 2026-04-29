@@ -28,6 +28,8 @@ import gatesRouter from './routes/gates.js';
 import auditRouter from './routes/audit.js';
 import templatesRouter from './routes/templates.js';
 import artifactsRouter from './routes/artifacts.js';
+import iacRouter, { onGateDecision as iacOnGate } from './routes/iac.js';
+import { startDriftSweep } from './iac.js';
 
 dotenv.config();
 
@@ -88,6 +90,7 @@ app.use('/api/gates', gatesRouter);
 app.use('/api/audit', auditRouter);
 app.use('/api/templates', templatesRouter);
 app.use('/api/artifacts', artifactsRouter);
+app.use('/api/iac', iacRouter);
 
 // SSE endpoint (auth handled inside addClient)
 app.get('/api/events', (req, res) => { addClient(req, res); });
@@ -115,8 +118,10 @@ async function start() {
     await bootstrapAdmin();
     await seed();
     onGateDecided(strategyOnGate);
+    onGateDecided(iacOnGate);
     startSimulation();
     startMonitoring();
+    startDriftSweep();
     app.listen(PORT, '0.0.0.0', () => {
       console.log(`✓ AgenticOps API running on port ${PORT}`);
     });

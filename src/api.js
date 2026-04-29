@@ -159,6 +159,23 @@ const api = {
     register: (data) => request('POST', '/api/artifacts', data),
     delete: (id) => request('DELETE', `/api/artifacts/${id}`),
   },
+
+  // IaC management (Terraform plan/apply, agent-proposed patches)
+  iac: {
+    listConfigs: () => request('GET', '/api/iac/configs'),
+    createConfig: (data) => request('POST', '/api/iac/configs', data),
+    updateConfig: (id, data) => request('PUT', `/api/iac/configs/${id}`, data),
+    deleteConfig: (id) => request('DELETE', `/api/iac/configs/${id}`),
+    listRuns: (filters = {}) => {
+      const qs = new URLSearchParams(filters).toString();
+      return request('GET', `/api/iac/runs${qs ? '?' + qs : ''}`);
+    },
+    getRun: (id) => request('GET', `/api/iac/runs/${id}`),
+    latestProposal: () => request('GET', '/api/iac/latest-proposal'),
+    plan: (configId, body = {}) => request('POST', `/api/iac/configs/${configId}/plan`, body),
+    apply: (runId) => request('POST', `/api/iac/runs/${runId}/apply`),
+    cancel: (runId) => request('POST', `/api/iac/runs/${runId}/cancel`),
+  },
 };
 
 // ── SSE Connection ──

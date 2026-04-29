@@ -15,6 +15,7 @@ import ToastContainer from './components/Toast';
 import SearchCommand from './components/SearchCommand';
 import { useApp } from './store';
 import { useSimulation } from './simulation';
+import api from './api';
 
 // ============================================================
 // NODE TYPE DEFINITIONS
@@ -65,6 +66,18 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [searchOpen, setSearchOpen] = useState(false);
   const [showDiffModal, setShowDiffModal] = useState(false);
+  const [agentProposal, setAgentProposal] = useState(null);
+
+  // When the diff modal opens, fetch the most recent agent-proposed patch.
+  // Falls back to the canned demo diff if no real proposal exists yet.
+  useEffect(() => {
+    if (!showDiffModal) return;
+    let cancelled = false;
+    api.iac.latestProposal()
+      .then(p => { if (!cancelled) setAgentProposal(p); })
+      .catch(() => { if (!cancelled) setAgentProposal(null); });
+    return () => { cancelled = true; };
+  }, [showDiffModal]);
 
   // Enable real-time simulation
   useSimulation(true);
@@ -179,48 +192,62 @@ export default function App() {
       {/* Search Command Palette */}
       <SearchCommand open={searchOpen} onClose={() => setSearchOpen(false)} onNavigate={handleNavigate} />
 
-      {/* Diff Modal */}
+      {/* Diff Modal — shows the latest agent-proposed Terraform patch from /api/iac/latest-proposal */}
       {showDiffModal && (
         <div className="fixed inset-0 bg-black/25 z-[80] flex items-center justify-center" onClick={() => setShowDiffModal(false)}>
-          <div className="bg-white border-2 border-gray-900 shadow-[8px_8px_0_0_#111827] w-[600px] max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+          <div className="bg-white border-2 border-gray-900 shadow-[8px_8px_0_0_#111827] w-[640px] max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
             <div className="p-4 border-b border-gray-200 bg-gray-50 flex items-center justify-between">
-              <h3 className="text-sm font-bold text-gray-900 uppercase tracking-widest flex items-center"><GitCommit size={14} className="mr-2" /> Infrastructure Diff</h3>
+              <h3 className="text-sm font-bold text-gray-900 uppercase tracking-widest flex items-center">
+                <GitCommit size={14} className="mr-2" />
+                {agentProposal ? 'Agent-Proposed Patch' : 'Infrastructure Diff (demo)'}
+              </h3>
               <button onClick={() => setShowDiffModal(false)} className="text-gray-400 hover:text-gray-900 cursor-pointer"><X size={14} /></button>
             </div>
             <div className="p-4 overflow-y-auto hidden-scrollbar">
-              <div className="bg-[#111827] border-2 border-gray-900 p-4 font-mono text-[11px] leading-relaxed">
-                <div className="text-gray-500 mb-2">--- a/terraform/lambda.tf</div>
-                <div className="text-gray-500 mb-3">+++ b/terraform/lambda.tf</div>
-                <div className="text-gray-400">@@ -12,7 +12,7 @@ resource "aws_lambda_function" "post_handler" {'{'}</div>
-                <div className="text-gray-400">   runtime       = "java17"</div>
-                <div className="text-gray-400">   handler       = "com.nexus.api.PostHandler"</div>
-                <div className="text-gray-400">   timeout       = 30</div>
-                <div className="text-red-400 bg-red-900/20 px-2">-  memory_size   = 128</div>
-                <div className="text-green-400 bg-green-900/20 px-2">+  memory_size   = 256</div>
-                <div className="text-gray-400">   </div>
-                <div className="text-gray-400">   environment {'{'}</div>
-                <div className="text-gray-400">     variables = {'{'}</div>
-                <div className="text-gray-400 mt-3">@@ -24,6 +24,8 @@ resource "aws_cloudwatch_metric_alarm" "post_handler_memory" {'{'}</div>
-                <div className="text-gray-400">   metric_name         = "MemoryUtilization"</div>
-                <div className="text-red-400 bg-red-900/20 px-2">-  threshold           = 90</div>
-                <div className="text-green-400 bg-green-900/20 px-2">+  threshold           = 80</div>
-                <div className="text-green-400 bg-green-900/20 px-2">+  evaluation_periods  = 2</div>
-                <div className="text-gray-400">   comparison_operator = "GreaterThanThreshold"</div>
-              </div>
-              <div className="mt-4 grid grid-cols-3 gap-3">
-                <div className="border border-gray-200 p-3 text-center">
-                  <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Files Changed</div>
-                  <div className="text-lg font-bold font-mono text-gray-900">2</div>
+              {agentProposal?.agent_diagnosis && (
+                <div className="mb-3 border border-gray-200 bg-gray-50 p-3 text-xs leading-relaxed text-gray-700 whitespace-pre-wrap">
+                  {agentProposal.agent_diagnosis}
                 </div>
-                <div className="border border-gray-200 p-3 text-center">
-                  <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Added</div>
-                  <div className="text-lg font-bold font-mono text-green-600">+3</div>
+              )}
+              {agentProposal?.proposed_patch ? (
+                <pre className="bg-[#111827] border-2 border-gray-900 p-4 font-mono text-[11px] leading-relaxed text-gray-200 overflow-x-auto whitespace-pre">
+                  {agentProposal.proposed_patch.split('\n').map((line, i) => {
+                    let cls = 'text-gray-300';
+                    if (line.startsWith('+++') || line.startsWith('---')) cls = 'text-gray-500';
+                    else if (line.startsWith('+')) cls = 'text-green-400';
+                    else if (line.startsWith('-')) cls = 'text-red-400';
+                    else if (line.startsWith('@@')) cls = 'text-blue-300';
+                    return <div key={i} className={cls}>{line || ' '}</div>;
+                  })}
+                </pre>
+              ) : (
+                <div className="bg-[#111827] border-2 border-gray-900 p-4 font-mono text-[11px] leading-relaxed">
+                  <div className="text-gray-500 mb-2">--- a/terraform/lambda.tf</div>
+                  <div className="text-gray-500 mb-3">+++ b/terraform/lambda.tf</div>
+                  <div className="text-gray-400">@@ -12,7 +12,7 @@ resource "aws_lambda_function" "post_handler" {'{'}</div>
+                  <div className="text-gray-400">   runtime       = "java17"</div>
+                  <div className="text-gray-400">   handler       = "com.nexus.api.PostHandler"</div>
+                  <div className="text-gray-400">   timeout       = 30</div>
+                  <div className="text-red-400 bg-red-900/20 px-2">-  memory_size   = 128</div>
+                  <div className="text-green-400 bg-green-900/20 px-2">+  memory_size   = 256</div>
+                  <div className="text-gray-400">   </div>
+                  <div className="text-gray-400">   environment {'{'}</div>
+                  <div className="text-gray-400">     variables = {'{'}</div>
+                  <div className="text-gray-400 mt-3">@@ -24,6 +24,8 @@ resource "aws_cloudwatch_metric_alarm" "post_handler_memory" {'{'}</div>
+                  <div className="text-gray-400">   metric_name         = "MemoryUtilization"</div>
+                  <div className="text-red-400 bg-red-900/20 px-2">-  threshold           = 90</div>
+                  <div className="text-green-400 bg-green-900/20 px-2">+  threshold           = 80</div>
+                  <div className="text-green-400 bg-green-900/20 px-2">+  evaluation_periods  = 2</div>
+                  <div className="text-gray-400">   comparison_operator = "GreaterThanThreshold"</div>
                 </div>
-                <div className="border border-gray-200 p-3 text-center">
-                  <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Removed</div>
-                  <div className="text-lg font-bold font-mono text-red-600">-2</div>
+              )}
+              <DiffStats patch={agentProposal?.proposed_patch} />
+              {agentProposal?.gate_id && (
+                <div className="mt-3 text-[11px] font-mono text-gray-500">
+                  Gate <span className="text-gray-900 font-bold">{agentProposal.gate_id}</span> &nbsp;·&nbsp;
+                  Run <span className="text-gray-900 font-bold">{agentProposal.id}</span>
                 </div>
-              </div>
+              )}
             </div>
           </div>
         </div>
@@ -532,6 +559,33 @@ export default function App() {
 // ============================================================
 // SUB-COMPONENTS
 // ============================================================
+
+function DiffStats({ patch }) {
+  // Either compute counts from the agent's patch, or fall back to the demo values.
+  let files = 2, added = 3, removed = 2;
+  if (patch) {
+    const lines = patch.split('\n');
+    files = lines.filter(l => l.startsWith('+++ ')).length || 1;
+    added = lines.filter(l => l.startsWith('+') && !l.startsWith('+++')).length;
+    removed = lines.filter(l => l.startsWith('-') && !l.startsWith('---')).length;
+  }
+  return (
+    <div className="mt-4 grid grid-cols-3 gap-3">
+      <div className="border border-gray-200 p-3 text-center">
+        <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Files Changed</div>
+        <div className="text-lg font-bold font-mono text-gray-900">{files}</div>
+      </div>
+      <div className="border border-gray-200 p-3 text-center">
+        <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Added</div>
+        <div className="text-lg font-bold font-mono text-green-600">+{added}</div>
+      </div>
+      <div className="border border-gray-200 p-3 text-center">
+        <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Removed</div>
+        <div className="text-lg font-bold font-mono text-red-600">-{removed}</div>
+      </div>
+    </div>
+  );
+}
 
 function NavItem({ icon, label, shortcut, active = false, onClick }) {
   return (

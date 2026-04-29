@@ -131,6 +131,38 @@ CREATE TABLE IF NOT EXISTS artifacts (
 );
 CREATE INDEX IF NOT EXISTS idx_artifacts_repo ON artifacts(registry, repository, pushed_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_unique ON artifacts(registry, repository, tag);
+
+-- Phase 2: IaC management
+CREATE TABLE IF NOT EXISTS iac_configs (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  repo_full_name TEXT,
+  branch TEXT DEFAULT 'main',
+  tf_dir TEXT DEFAULT '.',
+  cloud_connector_id TEXT,
+  drift_check_interval_ms BIGINT DEFAULT 3600000,
+  last_drift_check_at BIGINT,
+  last_known_state_hash TEXT,
+  created_at BIGINT NOT NULL,
+  created_by TEXT
+);
+CREATE TABLE IF NOT EXISTS iac_runs (
+  id TEXT PRIMARY KEY,
+  iac_config_id TEXT NOT NULL REFERENCES iac_configs(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('plan','apply','drift-check','destroy')),
+  status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running','passed','failed','drift-detected','no-changes','cancelled')),
+  triggered_by TEXT,
+  incident_id TEXT,
+  gate_id TEXT,
+  plan_summary JSONB,
+  proposed_patch TEXT,
+  agent_diagnosis TEXT,
+  started_at BIGINT NOT NULL,
+  finished_at BIGINT,
+  duration_ms INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_iac_runs_config ON iac_runs(iac_config_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_iac_runs_kind ON iac_runs(kind, status, started_at DESC);
 `;
 
 export async function initDb() {

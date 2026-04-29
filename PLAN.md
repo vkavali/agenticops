@@ -68,18 +68,37 @@ Blocks every other module. No agent should mutate infra without these.
 - [x] Pipeline-level timeout — `pipeline.timeout` ("30m", "2h"); SIGKILLs all
       in-flight processes for the run on expiry.
 
-### Phase 2 — Lead wedge: agentic IaC remediation
+### Phase 2 — Lead wedge: agentic IaC remediation ✅ (core)
 
-The headline demo. Replaces the hardcoded Lambda diff in `App.jsx:184-227`
-with a real loop.
+The headline demo. The hardcoded Lambda diff in `App.jsx` is now replaced
+with the live agent-proposed patch when one exists.
 
-- [ ] Real Terraform runner: `terraform init/plan/apply` from cloned repo
-- [ ] TF state visualization in topology view (drives `nodes`/`links`)
-- [ ] Drift detection: scheduled `plan` → diff vs. last-applied
-- [ ] Agent diagnosis: feed incident + recent logs/metrics to LLM, get patch proposal
-- [ ] Auto-PR flow: agent commits patch to branch, opens PR, waits for CI
-- [ ] Apply gate: approval required before `terraform apply`
-- [ ] Rollback path: revert PR + re-apply previous state
+- [x] Real Terraform runner: `terraform init/plan/apply` from cloned repo —
+      `server/iac.js`. Streams logs via SSE under `iac:log`. Uses
+      `-detailed-exitcode` so drift checks distinguish "no changes" from
+      "changes pending".
+- [x] Drift detection: scheduled sweep — `startDriftSweep()` walks every
+      config and re-plans on its configured interval; emits
+      `iac:run-finished` with `status='drift-detected'`.
+- [x] Agent diagnosis: `server/agent.js` calls `claude-opus-4-7` with
+      adaptive thinking (`effort: "xhigh"`). Prompt-caching layout: system
+      instructions + Terraform source as cached blocks; incident +
+      `terraform plan` output as the volatile user message. Verified via
+      `usage.cache_read_input_tokens` (logged in the run).
+- [x] Apply gate: when the agent proposes a non-empty patch we call
+      `createGate(subject_type='iac_run', required_role='operator')` and
+      park the run. `routes/iac.js#apply` refuses unless the gate is
+      approved.
+- [x] Static `App.jsx` diff modal replaced — fetches
+      `/api/iac/latest-proposal` and renders the agent's diagnosis +
+      unified diff. Falls back to the demo diff only when no real proposal
+      exists yet.
+- [ ] **Follow-on:** Auto-PR flow (commit patch to branch, open PR, wait
+      for CI, merge → apply). Currently the apply happens in-place on a
+      fresh clone with `git apply` then `terraform apply -auto-approve`.
+- [ ] **Follow-on:** TF state visualization driving the topology view.
+- [ ] **Follow-on:** Rollback by re-running plan/apply against the
+      previous git SHA.
 
 ### Phase 3 — Fill out remaining surface
 
