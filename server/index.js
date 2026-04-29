@@ -30,6 +30,8 @@ import templatesRouter from './routes/templates.js';
 import artifactsRouter from './routes/artifacts.js';
 import iacRouter, { onGateDecision as iacOnGate } from './routes/iac.js';
 import { startDriftSweep } from './iac.js';
+import slosRouter from './routes/slos.js';
+import { startSloEvaluator } from './slo.js';
 
 dotenv.config();
 
@@ -91,6 +93,7 @@ app.use('/api/audit', auditRouter);
 app.use('/api/templates', templatesRouter);
 app.use('/api/artifacts', artifactsRouter);
 app.use('/api/iac', iacRouter);
+app.use('/api/slos', slosRouter);
 
 // SSE endpoint (auth handled inside addClient)
 app.get('/api/events', (req, res) => { addClient(req, res); });
@@ -122,6 +125,7 @@ async function start() {
     startSimulation();
     startMonitoring();
     startDriftSweep();
+    startSloEvaluator();
     app.listen(PORT, '0.0.0.0', () => {
       console.log(`✓ AgenticOps API running on port ${PORT}`);
     });

@@ -128,8 +128,9 @@ async function finishRun(runId, fields) {
   const duration = start ? finishedAt - Number(start.started_at) : null;
   await execute(
     `UPDATE iac_runs SET status=$1, plan_summary=$2, proposed_patch=$3,
-       agent_diagnosis=$4, gate_id=$5, finished_at=$6, duration_ms=$7
-     WHERE id=$8`,
+       agent_diagnosis=$4, gate_id=$5, finished_at=$6, duration_ms=$7,
+       applied_sha=COALESCE($8, applied_sha)
+     WHERE id=$9`,
     [
       fields.status,
       fields.plan_summary ? JSON.stringify(fields.plan_summary) : null,
@@ -138,6 +139,7 @@ async function finishRun(runId, fields) {
       fields.gate_id || null,
       finishedAt,
       duration,
+      fields.applied_sha || null,
       runId,
     ]
   );
@@ -255,10 +257,19 @@ export async function runApply(config, sourceRun, { triggeredBy = null } = {}) {
     const initRes = await spawnCmd('terraform', ['init', '-no-color', '-input=false'], tfDir, runId, 'init');
     if (initRes.exitCode !== 0) { await finishRun(runId, { status: 'failed' }); return { runId, status: 'failed' }; }
 
+    // Capture the HEAD SHA we're applying from. For PR-merge applies the caller
+    // already passed applied_sha through sourceRun; for in-place + rollback we
+    // resolve it from the working copy.
+    let appliedSha = sourceRun.applied_sha || null;
+    if (!appliedSha) {
+      const sha = await spawnCmd('git', ['rev-parse', 'HEAD'], workDir, runId, 'sha');
+      appliedSha = sha.logs.join('').trim() || null;
+    }
+
     const applyRes = await spawnCmd('terraform', ['apply', '-no-color', '-input=false', '-auto-approve'], tfDir, runId, 'apply');
     const status = applyRes.exitCode === 0 ? 'passed' : 'failed';
-    await finishRun(runId, { status });
-    return { runId, status };
+    await finishRun(runId, { status, applied_sha: appliedSha });
+    return { runId, status, appliedSha };
   } catch (err) {
     broadcast('iac:log', { runId, stage: 'system', line: `[error] ${err.message}` });
     await finishRun(runId, { status: 'failed' });
@@ -369,8 +380,53 @@ export async function openRemediationPR(config, sourceRun, { triggeredBy = null 
 }
 
 /**
+ * Verify the head SHA of a PR has passing CI before we apply.
+ * Belt-and-suspenders next to GitHub's branch-protection: even if a PR slips
+ * through with red checks, we refuse to apply.
+ *
+ * Returns { ok, summary } — ok=false means apply should be aborted.
+ * Treats no checks as ok (caller's repo doesn't run CI).
+ */
+async function verifyChecksPassing(repoFullName, sha, runId) {
+  const conn = await queryOne('SELECT access_token FROM github_connections ORDER BY created_at DESC LIMIT 1');
+  if (!conn?.access_token) return { ok: true, summary: 'no GitHub token; skipping CI gate' };
+  const token = decrypt(conn.access_token);
+
+  try {
+    const res = await fetch(`${GITHUB_API}/repos/${repoFullName}/commits/${sha}/check-runs`, {
+      headers: { Authorization: `Bearer ${token}`, 'User-Agent': 'AgenticOps', Accept: 'application/vnd.github+json' },
+    });
+    if (!res.ok) return { ok: true, summary: `check-runs fetch ${res.status}; skipping` };
+    const data = await res.json();
+    const runs = data.check_runs || [];
+    if (runs.length === 0) return { ok: true, summary: 'no checks configured' };
+
+    const failed = runs.filter(r => r.conclusion && !['success', 'neutral', 'skipped'].includes(r.conclusion));
+    const pending = runs.filter(r => !r.conclusion);
+
+    if (failed.length > 0) {
+      const names = failed.map(r => `${r.name}=${r.conclusion}`).join(', ');
+      broadcast('iac:log', { runId, stage: 'ci-gate', line: `✗ CI gate: ${names}` });
+      return { ok: false, summary: `${failed.length} check(s) failed: ${names}` };
+    }
+    if (pending.length > 0) {
+      const names = pending.map(r => r.name).join(', ');
+      broadcast('iac:log', { runId, stage: 'ci-gate', line: `✗ CI gate: ${pending.length} check(s) still pending: ${names}` });
+      return { ok: false, summary: `${pending.length} check(s) pending` };
+    }
+    broadcast('iac:log', { runId, stage: 'ci-gate', line: `✓ CI gate: ${runs.length} check(s) passed` });
+    return { ok: true, summary: `${runs.length} checks passed` };
+  } catch (err) {
+    broadcast('iac:log', { runId, stage: 'ci-gate', line: `[error] check-runs fetch failed: ${err.message}` });
+    // Fail closed — if we can't verify, don't apply.
+    return { ok: false, summary: `check-runs fetch error: ${err.message}` };
+  }
+}
+
+/**
  * Called by the GitHub webhook when a remediation PR is merged.
- * Triggers terraform apply against the merged base branch.
+ * Verifies CI passed, records the previous-applied SHA for rollback,
+ * then triggers terraform apply against the merged base branch.
  */
 export async function onRemediationPRMerged(prNumber, mergedSha) {
   const run = await queryOne(
@@ -384,10 +440,72 @@ export async function onRemediationPRMerged(prNumber, mergedSha) {
   const config = await queryOne('SELECT * FROM iac_configs WHERE id=$1', [run.iac_config_id]);
   if (!config) return null;
 
-  // Run terraform apply against the merged base. We pass the source run so
-  // runApply records the lineage; the patch is already merged into the base
-  // branch, so we skip the in-place git apply.
-  return runApply(config, { ...run, proposed_patch: null }, { triggeredBy: `pr-merge:#${prNumber}` });
+  // CI gate — refuse to apply if checks aren't passing on the merge commit.
+  const gate = await verifyChecksPassing(config.repo_full_name, mergedSha, run.id);
+  if (!gate.ok) {
+    await execute("UPDATE iac_runs SET status='failed' WHERE id=$1", [run.id]);
+    broadcast('iac:run-finished', { id: run.id, status: 'failed', reason: gate.summary });
+    return { runId: run.id, status: 'failed', reason: gate.summary };
+  }
+
+  // Record the previous-applied SHA for rollback before kicking off apply.
+  const prevApply = await queryOne(
+    `SELECT applied_sha FROM iac_runs
+     WHERE iac_config_id=$1 AND kind='apply' AND status='passed' AND applied_sha IS NOT NULL
+     ORDER BY started_at DESC LIMIT 1`,
+    [run.iac_config_id]
+  );
+  await execute(
+    'UPDATE iac_runs SET applied_sha=$1, previous_sha=$2 WHERE id=$3',
+    [mergedSha, prevApply?.applied_sha || null, run.id]
+  );
+
+  // Run terraform apply against the merged base. Patch is already in the
+  // base branch — pass proposed_patch=null to skip the in-place git apply.
+  return runApply(config, { ...run, proposed_patch: null, applied_sha: mergedSha },
+    { triggeredBy: `pr-merge:#${prNumber}` });
+}
+
+/**
+ * Re-apply terraform at a previous SHA. Records a new iac_run with kind='apply'
+ * and `rolled_back_from` pointing at the run we're undoing.
+ *
+ * If targetSha is omitted, picks `previous_sha` from the run being rolled back.
+ */
+export async function runRollback(config, sourceRun, { targetSha = null, triggeredBy = null } = {}) {
+  const sha = targetSha || sourceRun.previous_sha;
+  if (!sha) throw new Error('No previous SHA available for rollback');
+
+  const runId = await recordRunStart(config.id, 'apply', triggeredBy, sourceRun.incident_id);
+  await execute('UPDATE iac_runs SET rolled_back_from=$1 WHERE id=$2', [sourceRun.id, runId]);
+
+  let workDir = null;
+  try {
+    const { workDir: wd, cloneUrl } = await setupWorkdir(config);
+    workDir = wd;
+
+    broadcast('iac:log', { runId, stage: 'rollback', line: `> Rolling back to ${sha.slice(0, 12)}` });
+    // Full clone so we can checkout an arbitrary SHA (depth 1 won't have it).
+    let r = await spawnCmd('git', ['clone', cloneUrl, '.'], workDir, runId, 'clone');
+    if (r.exitCode !== 0) { await finishRun(runId, { status: 'failed' }); return { runId, status: 'failed' }; }
+    r = await spawnCmd('git', ['checkout', sha], workDir, runId, 'clone');
+    if (r.exitCode !== 0) { await finishRun(runId, { status: 'failed' }); return { runId, status: 'failed' }; }
+
+    const tfDir = path.join(workDir, config.tf_dir || '.');
+    const initRes = await spawnCmd('terraform', ['init', '-no-color', '-input=false'], tfDir, runId, 'init');
+    if (initRes.exitCode !== 0) { await finishRun(runId, { status: 'failed' }); return { runId, status: 'failed' }; }
+
+    const applyRes = await spawnCmd('terraform', ['apply', '-no-color', '-input=false', '-auto-approve'], tfDir, runId, 'apply');
+    const status = applyRes.exitCode === 0 ? 'passed' : 'failed';
+    await finishRun(runId, { status, applied_sha: sha });
+    return { runId, status, appliedSha: sha };
+  } catch (err) {
+    broadcast('iac:log', { runId, stage: 'system', line: `[error] ${err.message}` });
+    await finishRun(runId, { status: 'failed' });
+    return { runId, status: 'failed', error: err.message };
+  } finally {
+    if (workDir) { try { await rm(workDir, { recursive: true, force: true }); } catch {} }
+  }
 }
 
 export async function onRemediationPRClosed(prNumber) {

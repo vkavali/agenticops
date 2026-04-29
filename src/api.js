@@ -173,8 +173,20 @@ const api = {
     getRun: (id) => request('GET', `/api/iac/runs/${id}`),
     latestProposal: () => request('GET', '/api/iac/latest-proposal'),
     plan: (configId, body = {}) => request('POST', `/api/iac/configs/${configId}/plan`, body),
-    apply: (runId) => request('POST', `/api/iac/runs/${runId}/apply`),
+    apply: (runId, body = {}) => request('POST', `/api/iac/runs/${runId}/apply`, body),
     cancel: (runId) => request('POST', `/api/iac/runs/${runId}/cancel`),
+    rollback: (runId, body = {}) => request('POST', `/api/iac/runs/${runId}/rollback`, body),
+  },
+
+  // SLOs / error budgets
+  slos: {
+    list: () => request('GET', '/api/slos'),
+    get: (id) => request('GET', `/api/slos/${id}`),
+    create: (data) => request('POST', '/api/slos', data),
+    update: (id, data) => request('PUT', `/api/slos/${id}`, data),
+    delete: (id) => request('DELETE', `/api/slos/${id}`),
+    evals: (id, limit = 100) => request('GET', `/api/slos/${id}/evals?limit=${limit}`),
+    triggerEval: () => request('POST', '/api/slos/eval'),
   },
 };
 

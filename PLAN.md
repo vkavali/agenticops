@@ -102,17 +102,26 @@ with the live agent-proposed patch when one exists.
       handler in `routes/github.js` watches `pull_request.closed` events
       — `merged: true` triggers `terraform apply` against the merged
       base; `merged: false` marks the run closed.
-- [ ] **Follow-on:** Wait for CI checks before allowing merge (currently
-      the human merging the PR is the gate).
+- [x] CI checks gate — `verifyChecksPassing()` queries GitHub
+      `/repos/.../commits/{sha}/check-runs` before applying. Refuses
+      apply if any check failed or is still pending; fails closed on
+      fetch errors. Skipped only when no checks are configured.
+- [x] Rollback by re-running apply at the previous SHA — `runRollback()`
+      full-clones, checks out the target SHA, re-runs `terraform apply`.
+      `iac_runs.applied_sha` / `previous_sha` / `rolled_back_from`
+      track lineage. `/api/iac/runs/:id/rollback`.
 - [ ] **Follow-on:** TF state visualization driving the topology view.
-- [ ] **Follow-on:** Rollback by re-running plan/apply against the
-      previous git SHA.
 
 ### Phase 3 — Fill out remaining surface
 
 Schema + skeleton routes + minimal UI per module. Polish opportunistically.
 
-- [ ] **SRM**: `slos` table, error-budget calc, burn-rate alerts → `incidents`
+- [x] **SRM**: `slos` + `slo_evals` tables — `server/slo.js` evaluator
+      runs every 60s, computes availability or latency SLI from
+      `health_checks` over the SLO window, derives error-budget remaining
+      and burn rate. Burn rate ≥ alert threshold (default 2.0×) opens a
+      critical incident, deduped against existing actives. CRUD at
+      `/api/slos`, eval history at `/api/slos/:id/evals`.
 - [ ] **Feature Flags**: `flags`, `flag_rules`, evaluation API, agent-driven
       gradual rollout (auto-pause on metric regression)
 - [ ] **CCM**: AWS Cost Explorer / GCP Billing connectors, anomaly detection,

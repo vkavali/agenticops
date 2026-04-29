@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { query, queryOne, execute } from '../db.js';
 import { broadcast } from '../sse.js';
 import { requireAuth } from '../auth.js';
-import { runPlan, runApply, cancelRun, openRemediationPR } from '../iac.js';
+import { runPlan, runApply, runRollback, cancelRun, openRemediationPR } from '../iac.js';
 import { isAgentEnabled } from '../agent.js';
 
 const router = Router();
@@ -114,6 +114,25 @@ router.post('/configs/:id/plan', operator, async (req, res) => {
 router.post('/runs/:id/cancel', operator, async (req, res) => {
   const ok = cancelRun(req.params.id);
   res.json({ ok });
+});
+
+// Roll back a passed apply by re-running terraform apply at the previous SHA.
+// Optional ?target_sha overrides the default (which is the run's previous_sha).
+router.post('/runs/:id/rollback', operator, async (req, res) => {
+  const run = await queryOne('SELECT * FROM iac_runs WHERE id=$1', [req.params.id]);
+  if (!run) return res.status(404).json({ error: 'Run not found' });
+  if (run.kind !== 'apply' || run.status !== 'passed') {
+    return res.status(400).json({ error: 'Can only rollback successful apply runs' });
+  }
+  const targetSha = req.body?.target_sha || run.previous_sha;
+  if (!targetSha) return res.status(400).json({ error: 'No previous SHA available' });
+
+  const config = await queryOne('SELECT * FROM iac_configs WHERE id=$1', [run.iac_config_id]);
+  if (!config) return res.status(404).json({ error: 'Config not found' });
+
+  runRollback(config, run, { targetSha, triggeredBy: req.auth?.label || null })
+    .catch(err => console.error('Rollback failed:', err));
+  res.status(202).json({ ok: true, target_sha: targetSha });
 });
 
 // Apply a previously-approved run. The gate must already be approved.

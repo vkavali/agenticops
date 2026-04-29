@@ -86,6 +86,8 @@ export function AppProvider({ children, me = null }) {
   const [gates, setGates] = useState([]);
   const [templates, setTemplates] = useState([]);
   const [artifacts, setArtifacts] = useState([]);
+  const [slos, setSlos] = useState([]);
+  const [sloEvals, setSloEvals] = useState({}); // { sloId: latestEval }
 
   // ── Hydrate from API on mount ──
   useEffect(() => {
@@ -93,7 +95,7 @@ export function AppProvider({ children, me = null }) {
       try {
         const [svc, pips, deps, incs, act, nds, lnks, infState,
           envData, intData, secData, teamData, whData, polData, securityData, alertData, keyData, genData,
-          gatesData, tplData, artData,
+          gatesData, tplData, artData, sloData,
         ] = await Promise.all([
           api.services.list(),
           api.pipelines.list(),
@@ -116,6 +118,7 @@ export function AppProvider({ children, me = null }) {
           api.gates.list({ status: 'pending' }).catch(() => []),
           api.templates.list().catch(() => []),
           api.artifacts.list({ limit: 50 }).catch(() => []),
+          api.slos.list().catch(() => []),
         ]);
         setServices(svc);
         setPipelines(pips);
@@ -138,6 +141,7 @@ export function AppProvider({ children, me = null }) {
         setGates(gatesData);
         setTemplates(tplData);
         setArtifacts(artData);
+        setSlos(sloData);
       } catch (err) {
         console.error('Failed to hydrate from API:', err);
       }
@@ -215,6 +219,12 @@ export function AppProvider({ children, me = null }) {
           break;
         case 'artifact:registered':
           setArtifacts(prev => [event.data, ...prev]);
+          break;
+        case 'slo:created':
+          setSlos(prev => [event.data, ...prev]);
+          break;
+        case 'slo:evaluated':
+          setSloEvals(prev => ({ ...prev, [event.data.slo_id]: event.data }));
           break;
       }
     });
@@ -429,6 +439,8 @@ export function AppProvider({ children, me = null }) {
     gates, setGates,
     templates, setTemplates,
     artifacts, setArtifacts,
+    slos, setSlos,
+    sloEvals,
     toasts,
     activeIncidentCount, healthScore, securityScore, deploysToday, pipelineStats,
     toast, dismissToast, addActivity,

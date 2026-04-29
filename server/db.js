@@ -168,7 +168,36 @@ ALTER TABLE iac_runs ADD COLUMN IF NOT EXISTS pr_number INTEGER;
 ALTER TABLE iac_runs ADD COLUMN IF NOT EXISTS pr_url TEXT;
 ALTER TABLE iac_runs ADD COLUMN IF NOT EXISTS pr_branch TEXT;
 ALTER TABLE iac_runs ADD COLUMN IF NOT EXISTS pr_status TEXT;
+ALTER TABLE iac_runs ADD COLUMN IF NOT EXISTS applied_sha TEXT;
+ALTER TABLE iac_runs ADD COLUMN IF NOT EXISTS previous_sha TEXT;
+ALTER TABLE iac_runs ADD COLUMN IF NOT EXISTS rolled_back_from TEXT;
 CREATE INDEX IF NOT EXISTS idx_iac_runs_pr ON iac_runs(pr_number) WHERE pr_number IS NOT NULL;
+
+-- Phase 3: SLOs / error budgets
+CREATE TABLE IF NOT EXISTS slos (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  service TEXT NOT NULL,
+  sli_type TEXT NOT NULL CHECK (sli_type IN ('availability','latency')),
+  target_pct NUMERIC(6,3) NOT NULL,
+  window_ms BIGINT NOT NULL DEFAULT 2592000000,
+  latency_threshold_ms INTEGER,
+  burn_rate_alert_threshold NUMERIC(5,2) NOT NULL DEFAULT 2.0,
+  enabled BOOLEAN DEFAULT true,
+  created_at BIGINT NOT NULL,
+  created_by TEXT
+);
+CREATE TABLE IF NOT EXISTS slo_evals (
+  id BIGSERIAL PRIMARY KEY,
+  slo_id TEXT NOT NULL REFERENCES slos(id) ON DELETE CASCADE,
+  evaluated_at BIGINT NOT NULL,
+  sli_value NUMERIC(6,3) NOT NULL,
+  error_budget_remaining_pct NUMERIC(7,3) NOT NULL,
+  burn_rate NUMERIC(8,3) NOT NULL,
+  sample_count INTEGER NOT NULL,
+  alerting BOOLEAN DEFAULT false
+);
+CREATE INDEX IF NOT EXISTS idx_slo_evals_slo ON slo_evals(slo_id, evaluated_at DESC);
 `;
 
 export async function initDb() {
