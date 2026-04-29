@@ -36,8 +36,15 @@ import flagsRouter from './routes/flags.js';
 import { startRolloutController } from './flags.js';
 import costRouter from './routes/cost.js';
 import { startCostSweep, seedSyntheticCosts } from './cost.js';
+import { startAwsCostPoller } from './cost-aws.js';
 import chaosRouter from './routes/chaos.js';
 import { onGateDecision as chaosOnGate } from './chaos.js';
+import idpRouter from './routes/idp.js';
+import { startScorecardSweep } from './idp.js';
+import securityRouter from './routes/security.js';
+import gitopsRouter from './routes/gitops.js';
+import { startGitOpsSweep } from './gitops.js';
+import dbopsRouter from './routes/dbops.js';
 
 dotenv.config();
 
@@ -103,6 +110,10 @@ app.use('/api/slos', slosRouter);
 app.use('/api/flags', flagsRouter);
 app.use('/api/cost', costRouter);
 app.use('/api/chaos', chaosRouter);
+app.use('/api/idp', idpRouter);
+app.use('/api/security', securityRouter);
+app.use('/api/gitops', gitopsRouter);
+app.use('/api/dbops', dbopsRouter);
 
 // SSE endpoint (auth handled inside addClient)
 app.get('/api/events', (req, res) => { addClient(req, res); });
@@ -139,6 +150,9 @@ async function start() {
     startSloEvaluator();
     startRolloutController();
     startCostSweep();
+    startAwsCostPoller();
+    startScorecardSweep();
+    startGitOpsSweep();
     app.listen(PORT, '0.0.0.0', () => {
       console.log(`✓ AgenticOps API running on port ${PORT}`);
     });

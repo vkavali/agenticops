@@ -194,6 +194,73 @@ const api = {
     rollbackRollout: (rolloutId, reason) => request('POST', `/api/flags/rollouts/${rolloutId}/rollback`, { reason }),
   },
 
+  // Cloud Cost Management
+  cost: {
+    daily: (days = 14) => request('GET', `/api/cost/daily?days=${days}`),
+    byService: () => request('GET', '/api/cost/by-service'),
+    anomalies: () => request('GET', '/api/cost/anomalies'),
+    resolveAnomaly: (id) => request('POST', `/api/cost/anomalies/${id}/resolve`),
+    recommendations: () => request('GET', '/api/cost/recommendations'),
+    dismissRecommendation: (id) => request('POST', `/api/cost/recommendations/${id}/dismiss`),
+    sweep: () => request('POST', '/api/cost/sweep'),
+  },
+
+  // Chaos Engineering
+  chaos: {
+    listExperiments: () => request('GET', '/api/chaos/experiments'),
+    getExperiment: (id) => request('GET', `/api/chaos/experiments/${id}`),
+    createExperiment: (data) => request('POST', '/api/chaos/experiments', data),
+    deleteExperiment: (id) => request('DELETE', `/api/chaos/experiments/${id}`),
+    runExperiment: (id) => request('POST', `/api/chaos/experiments/${id}/run`),
+    listRuns: (limit = 50) => request('GET', `/api/chaos/runs?limit=${limit}`),
+    abortRun: (id, reason) => request('POST', `/api/chaos/runs/${id}/abort`, { reason }),
+  },
+
+  // IDP service catalog + scorecards
+  idp: {
+    listServices: () => request('GET', '/api/idp/services'),
+    getService: (id) => request('GET', `/api/idp/services/${id}`),
+    updateService: (id, data) => request('PATCH', `/api/idp/services/${id}`, data),
+    recompute: () => request('POST', '/api/idp/recompute'),
+  },
+
+  // STO security scans
+  security: {
+    listScans: (filters = {}) => {
+      const qs = new URLSearchParams(filters).toString();
+      return request('GET', `/api/security/scans${qs ? '?' + qs : ''}`);
+    },
+    getScan: (id) => request('GET', `/api/security/scans/${id}`),
+    submitScan: (data) => request('POST', '/api/security/scans', data),
+    listFindings: (filters = {}) => {
+      const qs = new URLSearchParams(filters).toString();
+      return request('GET', `/api/security/findings${qs ? '?' + qs : ''}`);
+    },
+    resolveFinding: (id) => request('POST', `/api/security/findings/${id}/resolve`),
+    ignoreFinding: (id) => request('POST', `/api/security/findings/${id}/ignore`),
+    blockers: (target) => request('GET', `/api/security/blockers/${encodeURIComponent(target)}`),
+  },
+
+  // GitOps
+  gitops: {
+    listApps: () => request('GET', '/api/gitops/apps'),
+    getApp: (id) => request('GET', `/api/gitops/apps/${id}`),
+    createApp: (data) => request('POST', '/api/gitops/apps', data),
+    updateApp: (id, data) => request('PUT', `/api/gitops/apps/${id}`, data),
+    deleteApp: (id) => request('DELETE', `/api/gitops/apps/${id}`),
+    sync: (id) => request('POST', `/api/gitops/apps/${id}/sync`),
+  },
+
+  // DB DevOps
+  dbops: {
+    listMigrations: () => request('GET', '/api/dbops/migrations'),
+    getMigration: (id) => request('GET', `/api/dbops/migrations/${id}`),
+    submitMigration: (data) => request('POST', '/api/dbops/migrations', data),
+    markApplied: (id) => request('POST', `/api/dbops/migrations/${id}/applied`),
+    rollbackMigration: (id) => request('POST', `/api/dbops/migrations/${id}/rollback`),
+    analyze: (sql_text) => request('POST', '/api/dbops/analyze', { sql_text }),
+  },
+
   // SLOs / error budgets
   slos: {
     list: () => request('GET', '/api/slos'),

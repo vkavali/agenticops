@@ -89,6 +89,13 @@ export function AppProvider({ children, me = null }) {
   const [slos, setSlos] = useState([]);
   const [sloEvals, setSloEvals] = useState({}); // { sloId: latestEval }
   const [flags, setFlags] = useState([]);
+  const [costAnomalies, setCostAnomalies] = useState([]);
+  const [costRecommendations, setCostRecommendations] = useState([]);
+  const [chaosExperiments, setChaosExperiments] = useState([]);
+  const [catalogServices, setCatalogServices] = useState([]);
+  const [securityScans, setSecurityScans] = useState([]);
+  const [gitopsApps, setGitopsApps] = useState([]);
+  const [dbMigrations, setDbMigrations] = useState([]);
 
   // ── Hydrate from API on mount ──
   useEffect(() => {
@@ -97,6 +104,8 @@ export function AppProvider({ children, me = null }) {
         const [svc, pips, deps, incs, act, nds, lnks, infState,
           envData, intData, secData, teamData, whData, polData, securityData, alertData, keyData, genData,
           gatesData, tplData, artData, sloData, flagData,
+          costAnomalyData, costRecData, chaosExpData, catalogData,
+          scanData, gitopsAppData, migrationData,
         ] = await Promise.all([
           api.services.list(),
           api.pipelines.list(),
@@ -121,6 +130,13 @@ export function AppProvider({ children, me = null }) {
           api.artifacts.list({ limit: 50 }).catch(() => []),
           api.slos.list().catch(() => []),
           api.flags.list().catch(() => []),
+          api.cost.anomalies().catch(() => []),
+          api.cost.recommendations().catch(() => []),
+          api.chaos.listExperiments().catch(() => []),
+          api.idp.listServices().catch(() => []),
+          api.security.listScans({ limit: 50 }).catch(() => []),
+          api.gitops.listApps().catch(() => []),
+          api.dbops.listMigrations().catch(() => []),
         ]);
         setServices(svc);
         setPipelines(pips);
@@ -145,6 +161,13 @@ export function AppProvider({ children, me = null }) {
         setArtifacts(artData);
         setSlos(sloData);
         setFlags(flagData);
+        setCostAnomalies(costAnomalyData);
+        setCostRecommendations(costRecData);
+        setChaosExperiments(chaosExpData);
+        setCatalogServices(catalogData);
+        setSecurityScans(scanData);
+        setGitopsApps(gitopsAppData);
+        setDbMigrations(migrationData);
       } catch (err) {
         console.error('Failed to hydrate from API:', err);
       }
@@ -249,6 +272,32 @@ export function AppProvider({ children, me = null }) {
             if (!f.rollout || f.rollout.id !== event.data.id) return f;
             return { ...f, rollout: { ...f.rollout, ...event.data } };
           }));
+          break;
+        case 'cost:anomaly':
+          setCostAnomalies(prev => [event.data, ...prev]);
+          break;
+        case 'chaos:experiment-created':
+          setChaosExperiments(prev => [event.data, ...prev]);
+          break;
+        case 'chaos:run-finished':
+          // Surface as a toast-friendly activity; experiment list refreshes itself.
+          break;
+        case 'idp:scorecards-computed':
+          // Trigger a refresh of catalogServices in the next render — cheap.
+          api.idp.listServices().then(setCatalogServices).catch(() => {});
+          break;
+        case 'security:scan-completed':
+          setSecurityScans(prev => [event.data, ...prev].slice(0, 100));
+          break;
+        case 'gitops:app-created':
+          setGitopsApps(prev => [event.data, ...prev]);
+          break;
+        case 'gitops:sync-finished':
+          setGitopsApps(prev => prev.map(a => a.id === event.data.app_id
+            ? { ...a, last_sync_status: event.data.status, last_sync_at: Date.now() } : a));
+          break;
+        case 'db:migration-submitted':
+          api.dbops.listMigrations().then(setDbMigrations).catch(() => {});
           break;
       }
     });
@@ -466,6 +515,13 @@ export function AppProvider({ children, me = null }) {
     slos, setSlos,
     sloEvals,
     flags, setFlags,
+    costAnomalies, setCostAnomalies,
+    costRecommendations, setCostRecommendations,
+    chaosExperiments, setChaosExperiments,
+    catalogServices, setCatalogServices,
+    securityScans, setSecurityScans,
+    gitopsApps, setGitopsApps,
+    dbMigrations, setDbMigrations,
     toasts,
     activeIncidentCount, healthScore, securityScore, deploysToday, pipelineStats,
     toast, dismissToast, addActivity,

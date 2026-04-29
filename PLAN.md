@@ -116,30 +116,37 @@ with the live agent-proposed patch when one exists.
 
 Schema + skeleton routes + minimal UI per module. Polish opportunistically.
 
-- [x] **SRM**: `slos` + `slo_evals` tables — `server/slo.js` evaluator
-      runs every 60s, computes availability or latency SLI from
-      `health_checks` over the SLO window, derives error-budget remaining
-      and burn rate. Burn rate ≥ alert threshold (default 2.0×) opens a
-      critical incident, deduped against existing actives. CRUD at
-      `/api/slos`, eval history at `/api/slos/:id/evals`.
-- [x] **Feature Flags**: `flags` + `flag_rules` + `flag_rollouts` schema.
-      `server/flags.js` evaluator: enabled-check → priority-ordered rules
-      with conditions (equals/in/contains/gt/etc.) → stable sha1
-      bucketing for percentage rollout → default. Gradual-rollout
-      controller bumps `current_pct` every `increment_interval_ms`,
-      auto-pauses at 1.5× SLO burn and auto-rolls-back at 2× — the
-      agentic angle Harness can't tell as cleanly. `/api/flags`: CRUD,
-      rules, `POST /:key/evaluate`, rollout start/pause/resume/rollback.
-- [ ] **CCM**: AWS Cost Explorer / GCP Billing connectors, anomaly detection,
-      idle-resource recommendations
-- [ ] **STO**: SAST/DAST/SCA orchestration as pipeline step types
-      (Semgrep, Trivy, Snyk integrations)
-- [ ] **Chaos**: fault-injection actions (latency, error rate, pod kill),
-      blast radius controls, hypothesis-driven runs
-- [ ] **IDP**: service catalog, scorecards (test coverage, SLO compliance,
-      security posture), software templates
-- [ ] **GitOps**: Argo-style sync loop, app-of-apps, drift auto-correct
-- [ ] **DB DevOps**: schema migration tracking, online-DDL safety checks
+- [x] **SRM**: `slos` + `slo_evals` — 60s evaluator computes availability
+      or latency SLI from `health_checks`, derives error budget +
+      burn rate, auto-creates incidents at burn ≥ threshold.
+- [x] **Feature Flags**: rules + percentage rollout + SLO-aware
+      auto-pause (1.5×) and auto-rollback (2×). The agentic angle.
+- [x] **CCM**: `cost_data` + anomaly detection + recommendations.
+      **Real AWS Cost Explorer adapter** (`server/cost-aws.js`) polls
+      `GetCostAndUsage` daily per `cloud_connectors` row with
+      `provider='aws'`, decrypts credentials from the encrypted-at-rest
+      envelope, upserts grouped-by-service cost rows. `seedSyntheticCosts`
+      remains as a demo fallback when no connector is configured.
+- [x] **STO**: `security_scans` + `security_findings` schema with
+      severity rollup. Generic ingest endpoint accepts findings from any
+      scanner (Trivy/Semgrep/Snyk wrappers). `hasOpenCriticalFindings`
+      exposed to other modules as a deployment pre-flight gate.
+- [x] **Chaos**: experiments + gated runs + auto-abort on linked SLO
+      burn ≥ 1.5×. Fault types modeled (latency, error-rate, pod-kill,
+      cpu-stress, network-loss); a real provider (LitmusChaos / Gremlin /
+      Chaos Mesh) plugs into `startInjection`/`clearInjection`.
+- [x] **IDP**: scorecard computer (`server/idp.js`) — 30-min sweep
+      computes SLO compliance, incident health, deploy freshness, and
+      security posture per service from existing data; letter grades A-F.
+- [x] **GitOps**: `gitops_apps` + `gitops_syncs`. 60s sweep clones each
+      app's repo, hashes the manifest tree, compares against
+      `last_sync_revision`, emits drift events. Real apply requires a
+      kubectl/helm plug-in at `gitops:sync-applied`.
+- [x] **DB DevOps**: `db_migrations` + safety analyzer. Heuristic SQL
+      pass flags destructive DDL (DROP/TRUNCATE), unrestricted UPDATE/
+      DELETE, ADD COLUMN NOT NULL without DEFAULT, non-CONCURRENT
+      CREATE INDEX, etc. Score < 50 → admin-required gate; else
+      operator-required gate.
 
 ## Cross-cutting work
 
