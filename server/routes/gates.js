@@ -7,6 +7,11 @@ import { record } from '../audit.js';
 
 const router = Router();
 
+// Listeners called when a gate is decided. Other modules (strategy engine,
+// IaC, chaos) register here to resume work that was waiting on approval.
+const decisionListeners = new Set();
+export function onGateDecided(fn) { decisionListeners.add(fn); }
+
 // List gates, optionally filtered by status (?status=pending) or subject.
 router.get('/', requireAuth('viewer'), async (req, res) => {
   const { status, subject_type, subject_id } = req.query;
@@ -51,6 +56,15 @@ router.post('/:id/decide', requireAuth('viewer'), async (req, res) => {
     detail: { subject_type: gate.subject_type, subject_id: gate.subject_id },
   });
   broadcast('gate:updated', { id: req.params.id, status: decision });
+
+  // Fan out to listeners (strategy engine, IaC, chaos). Failures here must
+  // not break the API response — the gate is already decided.
+  for (const fn of decisionListeners) {
+    Promise.resolve(fn(req.params.id, decision)).catch(err => {
+      console.error('Gate listener error:', err);
+    });
+  }
+
   res.json({ ok: true, status: decision });
 });
 

@@ -138,6 +138,27 @@ const api = {
   audit: {
     list: (limit = 100, offset = 0) => request('GET', `/api/audit?limit=${limit}&offset=${offset}`),
   },
+
+  // Pipeline templates
+  templates: {
+    list: (category) => request('GET', `/api/templates${category ? `?category=${encodeURIComponent(category)}` : ''}`),
+    get: (id) => request('GET', `/api/templates/${id}`),
+    create: (data) => request('POST', '/api/templates', data),
+    update: (id, data) => request('PUT', `/api/templates/${id}`, data),
+    delete: (id) => request('DELETE', `/api/templates/${id}`),
+    instantiate: (id, data) => request('POST', `/api/templates/${id}/instantiate`, data),
+  },
+
+  // Artifact registry metadata
+  artifacts: {
+    list: (filters = {}) => {
+      const qs = new URLSearchParams(filters).toString();
+      return request('GET', `/api/artifacts${qs ? '?' + qs : ''}`);
+    },
+    get: (id) => request('GET', `/api/artifacts/${id}`),
+    register: (data) => request('POST', '/api/artifacts', data),
+    delete: (id) => request('DELETE', `/api/artifacts/${id}`),
+  },
 };
 
 // ── SSE Connection ──

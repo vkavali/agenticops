@@ -49,15 +49,24 @@ Blocks every other module. No agent should mutate infra without these.
 4. `curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -d '{"role":"operator","label":"alice"}' /api/tokens`
 5. Hand that token to the user; they paste it into the TokenGate prompt
 
-### Phase 1 — Close obvious CI/CD gaps
+### Phase 1 — Close obvious CI/CD gaps ✅
 
-- [ ] CD: env promotion (dev → staging → prod) with approval gates
-- [ ] Deployment strategies: canary, blue-green, rolling
-- [ ] One-click rollback per deployment
-- [ ] Pipeline templates + reusable step library
-- [ ] Artifact registry metadata (Docker Hub, ECR, GHCR)
-- [ ] Parallel stage execution in `executor.js`
-- [ ] Pipeline-level timeout, not just per-command
+- [x] CD: env promotion (dev → staging → prod) with approval gates — `server/strategy.js`
+      auto-creates a gate for `production`, parks the deploy in `pending-approval`,
+      auto-resumes when the gate listener fires.
+- [x] Deployment strategies: canary, blue-green, rolling — phase progression with
+      `provisioning → canary-10/50/100 → verifying → complete` (and equivalents).
+      Strategy is set at deploy creation; engine drives state.
+- [x] One-click rollback per deployment — `strategyRollback` cancels in-flight
+      progression and marks the env `rolledback`.
+- [x] Pipeline templates + reusable step library — `server/routes/templates.js`,
+      `${VAR_NAME}` substitution + `/instantiate` to clone into a new pipeline.
+- [x] Artifact registry metadata — `server/routes/artifacts.js`, dedupe on
+      (registry, repository, tag).
+- [x] Parallel stage execution in `executor.js` — consecutive `stage.parallel`
+      stages run concurrently within a batch; batches run sequentially.
+- [x] Pipeline-level timeout — `pipeline.timeout` ("30m", "2h"); SIGKILLs all
+      in-flight processes for the run on expiry.
 
 ### Phase 2 — Lead wedge: agentic IaC remediation
 

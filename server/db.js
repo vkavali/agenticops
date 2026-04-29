@@ -100,6 +100,37 @@ CREATE TABLE IF NOT EXISTS approval_gates (
   expires_at BIGINT
 );
 CREATE INDEX IF NOT EXISTS idx_approval_gates_status ON approval_gates(status, created_at DESC);
+
+-- Phase 1: deployment strategies, templates, artifacts
+ALTER TABLE deployments ADD COLUMN IF NOT EXISTS strategy TEXT DEFAULT 'rolling'
+  CHECK (strategy IN ('rolling','canary','blue-green'));
+ALTER TABLE deployments ADD COLUMN IF NOT EXISTS gate_id TEXT;
+
+CREATE TABLE IF NOT EXISTS pipeline_templates (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT,
+  category TEXT,
+  stages JSONB NOT NULL DEFAULT '[]'::jsonb,
+  variables JSONB DEFAULT '{}'::jsonb,
+  created_at BIGINT NOT NULL,
+  created_by TEXT
+);
+
+CREATE TABLE IF NOT EXISTS artifacts (
+  id TEXT PRIMARY KEY,
+  registry TEXT NOT NULL,
+  repository TEXT NOT NULL,
+  tag TEXT NOT NULL,
+  digest TEXT,
+  size_bytes BIGINT,
+  pushed_at BIGINT NOT NULL,
+  pushed_by TEXT,
+  pipeline_run_id TEXT,
+  metadata JSONB DEFAULT '{}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS idx_artifacts_repo ON artifacts(registry, repository, pushed_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_unique ON artifacts(registry, repository, tag);
 `;
 
 export async function initDb() {

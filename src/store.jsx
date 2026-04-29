@@ -83,13 +83,17 @@ export function AppProvider({ children, me = null }) {
   const [apiKeys, setApiKeys] = useState([]);
   const [general, setGeneral] = useState({});
   const [toasts, setToasts] = useState([]);
+  const [gates, setGates] = useState([]);
+  const [templates, setTemplates] = useState([]);
+  const [artifacts, setArtifacts] = useState([]);
 
   // ── Hydrate from API on mount ──
   useEffect(() => {
     async function hydrate() {
       try {
         const [svc, pips, deps, incs, act, nds, lnks, infState,
-          envData, intData, secData, teamData, whData, polData, securityData, alertData, keyData, genData
+          envData, intData, secData, teamData, whData, polData, securityData, alertData, keyData, genData,
+          gatesData, tplData, artData,
         ] = await Promise.all([
           api.services.list(),
           api.pipelines.list(),
@@ -109,6 +113,9 @@ export function AppProvider({ children, me = null }) {
           api.settings.get('alerts'),
           api.settings.get('apiKeys'),
           api.settings.get('general'),
+          api.gates.list({ status: 'pending' }).catch(() => []),
+          api.templates.list().catch(() => []),
+          api.artifacts.list({ limit: 50 }).catch(() => []),
         ]);
         setServices(svc);
         setPipelines(pips);
@@ -128,6 +135,9 @@ export function AppProvider({ children, me = null }) {
         setAlerts(alertData);
         setApiKeys(keyData);
         setGeneral(genData);
+        setGates(gatesData);
+        setTemplates(tplData);
+        setArtifacts(artData);
       } catch (err) {
         console.error('Failed to hydrate from API:', err);
       }
@@ -193,6 +203,18 @@ export function AppProvider({ children, me = null }) {
           break;
         case 'node:updated':
           setNodes(prev => prev.map(n => n.id === event.data.id ? { ...n, ...event.data } : n));
+          break;
+        case 'gate:created':
+          setGates(prev => [event.data, ...prev]);
+          break;
+        case 'gate:updated':
+          setGates(prev => prev.map(g => g.id === event.data.id ? { ...g, status: event.data.status } : g));
+          break;
+        case 'template:created':
+          setTemplates(prev => [event.data, ...prev]);
+          break;
+        case 'artifact:registered':
+          setArtifacts(prev => [event.data, ...prev]);
           break;
       }
     });
@@ -293,12 +315,23 @@ export function AppProvider({ children, me = null }) {
       const envIndex = ENVIRONMENTS.indexOf(fromEnv);
       if (envIndex >= ENVIRONMENTS.length - 1) return;
       const toEnv = ENVIRONMENTS[envIndex + 1];
-      toast(`Promoting to ${toEnv}...`);
-      await api.deployments.promote(depId, fromEnv);
-      // SSE will handle the state updates
+      const result = await api.deployments.promote(depId, toEnv);
+      if (result?.gated) {
+        toast(`${toEnv} requires approval — gate ${result.gateId} pending`, 'warning');
+      } else {
+        toast(`Promoting to ${toEnv}...`);
+      }
       addActivity(`Promoting ${dep?.service} ${dep?.version} to ${toEnv}`, 'deploy');
     } catch (err) { toast(`Failed: ${err.message}`, 'error'); }
   }, [deployments, addActivity, toast]);
+
+  const decideGate = useCallback(async (gateId, decision) => {
+    try {
+      await api.gates.decide(gateId, decision);
+      setGates(prev => prev.map(g => g.id === gateId ? { ...g, status: decision } : g));
+      toast(`Gate ${decision}`, decision === 'approved' ? 'success' : 'warning');
+    } catch (err) { toast(`Failed: ${err.message}`, 'error'); }
+  }, [toast]);
 
   const rollbackDeployment = useCallback(async (depId, env) => {
     try {
@@ -393,11 +426,14 @@ export function AppProvider({ children, me = null }) {
     alerts, setAlerts,
     apiKeys, setApiKeys,
     general, setGeneral,
+    gates, setGates,
+    templates, setTemplates,
+    artifacts, setArtifacts,
     toasts,
     activeIncidentCount, healthScore, securityScore, deploysToday, pipelineStats,
     toast, dismissToast, addActivity,
     createIncident, acknowledgeIncident, resolveIncident, addIncidentComment, updateIncident,
-    addDeployment, updateDeployment, promoteDeployment, rollbackDeployment,
+    addDeployment, updateDeployment, promoteDeployment, rollbackDeployment, decideGate,
     updatePipeline, addPipelineRun, addPipeline, deletePipeline,
     executeRemediation, resetStore,
     ENVIRONMENTS, STAGE_DEFAULTS,

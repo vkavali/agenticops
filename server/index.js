@@ -11,6 +11,8 @@ import { startMonitoring } from './monitor.js';
 import { bootstrapAdmin, requireAuth } from './auth.js';
 import { auditMiddleware } from './audit.js';
 import { migrateSecretsAtRest } from './migrate-secrets.js';
+import { onGateDecided } from './routes/gates.js';
+import { onGateDecision as strategyOnGate } from './strategy.js';
 import servicesRouter from './routes/services.js';
 import pipelinesRouter from './routes/pipelines.js';
 import deploymentsRouter from './routes/deployments.js';
@@ -24,6 +26,8 @@ import cloudRouter from './routes/cloud.js';
 import tokensRouter from './routes/tokens.js';
 import gatesRouter from './routes/gates.js';
 import auditRouter from './routes/audit.js';
+import templatesRouter from './routes/templates.js';
+import artifactsRouter from './routes/artifacts.js';
 
 dotenv.config();
 
@@ -82,6 +86,8 @@ app.use('/api/cloud', cloudRouter);
 app.use('/api/tokens', tokensRouter);
 app.use('/api/gates', gatesRouter);
 app.use('/api/audit', auditRouter);
+app.use('/api/templates', templatesRouter);
+app.use('/api/artifacts', artifactsRouter);
 
 // SSE endpoint (auth handled inside addClient)
 app.get('/api/events', (req, res) => { addClient(req, res); });
@@ -108,6 +114,7 @@ async function start() {
     await migrateSecretsAtRest();
     await bootstrapAdmin();
     await seed();
+    onGateDecided(strategyOnGate);
     startSimulation();
     startMonitoring();
     app.listen(PORT, '0.0.0.0', () => {

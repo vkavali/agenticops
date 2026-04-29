@@ -70,15 +70,89 @@ export async function executePipeline(pipeline, options = {}) {
   return run;
 }
 
+// Group consecutive stages where stage.parallel === true into a single batch.
+// Sequential stages become singleton batches.
+function batchStages(stages) {
+  const batches = [];
+  let i = 0;
+  while (i < stages.length) {
+    if (stages[i].parallel) {
+      const grp = [];
+      while (i < stages.length && stages[i].parallel) { grp.push(stages[i]); i++; }
+      batches.push(grp);
+    } else {
+      batches.push([stages[i]]);
+      i++;
+    }
+  }
+  return batches;
+}
+
+async function runStage(stage, workDir, runId) {
+  if (stage.type === 'approval') {
+    broadcast('pipeline:stage', { runId, stage: stage.name, status: 'passed' });
+    return { name: stage.name, status: 'passed', duration: '0s', logs: ['Auto-approved (no manual gate configured)'] };
+  }
+
+  const stageStart = Date.now();
+  broadcast('pipeline:stage', { runId, stage: stage.name, status: 'running' });
+  broadcast('pipeline:log', { runId, stage: stage.name, line: `> Starting: ${stage.name}` });
+
+  const commands = stage.commands || [];
+  const stageLogs = [];
+  let stageStatus = 'passed';
+
+  for (const cmd of commands) {
+    broadcast('pipeline:log', { runId, stage: stage.name, line: `$ ${cmd}` });
+    const result = await runCommand('sh', ['-c', cmd], workDir, runId, stage.name);
+    stageLogs.push(...result.logs);
+    if (result.exitCode !== 0) {
+      stageStatus = 'failed';
+      broadcast('pipeline:log', { runId, stage: stage.name, line: `✗ Command failed with exit code ${result.exitCode}` });
+      break;
+    }
+  }
+
+  const stageDuration = `${Math.round((Date.now() - stageStart) / 1000)}s`;
+  broadcast('pipeline:stage', { runId, stage: stage.name, status: stageStatus, duration: stageDuration });
+  if (stageStatus === 'passed') {
+    broadcast('pipeline:log', { runId, stage: stage.name, line: `✓ ${stage.name} completed (${stageDuration})` });
+  }
+  return { name: stage.name, status: stageStatus, duration: stageDuration, logs: stageLogs };
+}
+
+// Pipeline-level timeout: parsed from `pipeline.timeout` (e.g. "30m", "2h").
+// Defaults to 30 min. Returns ms.
+function parseTimeout(s) {
+  if (!s) return 30 * 60 * 1000;
+  const m = String(s).match(/^(\d+)\s*([smh]?)$/i);
+  if (!m) return 30 * 60 * 1000;
+  const n = parseInt(m[1], 10);
+  const unit = (m[2] || 'm').toLowerCase();
+  return n * (unit === 's' ? 1000 : unit === 'h' ? 3600000 : 60000);
+}
+
 async function runPipeline(pipeline, run, token, branch) {
   const startTime = Date.now();
   let workDir = null;
   const stages = pipeline.stages || [];
   const stageResults = [];
   let failed = false;
+  let timedOut = false;
+
+  const pipelineTimeoutMs = parseTimeout(pipeline.timeout);
+  const timeoutHandle = setTimeout(() => {
+    timedOut = true;
+    broadcast('pipeline:log', { runId: run.id, stage: 'system', line: `✗ Pipeline timed out after ${pipelineTimeoutMs / 1000}s — killing all stages` });
+    // Kill any in-flight processes for this run.
+    for (const [rid, info] of activeRuns.entries()) {
+      if (rid === run.id && info.process) {
+        try { info.process.kill('SIGKILL'); } catch {}
+      }
+    }
+  }, pipelineTimeoutMs);
 
   try {
-    // 1. Clone the repo
     workDir = await mkdtemp(path.join(os.tmpdir(), 'agenticops-'));
     const cloneUrl = token
       ? `https://x-access-token:${token}@github.com/${pipeline.repo_full_name}.git`
@@ -94,58 +168,37 @@ async function runPipeline(pipeline, run, token, branch) {
     }
     broadcast('pipeline:log', { runId: run.id, stage: 'clone', line: '✓ Repository cloned' });
 
-    // 2. Execute each stage
-    for (const stage of stages) {
+    // Execute batches sequentially; stages within a batch run concurrently.
+    for (const batch of batchStages(stages)) {
+      if (timedOut) break;
       if (failed) {
-        stageResults.push({ name: stage.name, status: 'skipped', duration: '—', logs: ['Skipped: previous stage failed'] });
-        broadcast('pipeline:stage', { runId: run.id, stage: stage.name, status: 'skipped' });
-        continue;
-      }
-
-      if (stage.type === 'approval') {
-        stageResults.push({ name: stage.name, status: 'passed', duration: '0s', logs: ['Auto-approved (no manual gate configured)'] });
-        broadcast('pipeline:stage', { runId: run.id, stage: stage.name, status: 'passed' });
-        continue;
-      }
-
-      const stageStart = Date.now();
-      broadcast('pipeline:stage', { runId: run.id, stage: stage.name, status: 'running' });
-      broadcast('pipeline:log', { runId: run.id, stage: stage.name, line: `> Starting: ${stage.name}` });
-
-      const commands = stage.commands || [];
-      const stageLogs = [];
-      let stageStatus = 'passed';
-
-      for (const cmd of commands) {
-        broadcast('pipeline:log', { runId: run.id, stage: stage.name, line: `$ ${cmd}` });
-        const result = await runCommand('sh', ['-c', cmd], workDir, run.id, stage.name);
-        stageLogs.push(...result.logs);
-
-        if (result.exitCode !== 0) {
-          stageStatus = 'failed';
-          failed = true;
-          broadcast('pipeline:log', { runId: run.id, stage: stage.name, line: `✗ Command failed with exit code ${result.exitCode}` });
-          break;
+        for (const s of batch) {
+          stageResults.push({ name: s.name, status: 'skipped', duration: '—', logs: ['Skipped: previous stage failed'] });
+          broadcast('pipeline:stage', { runId: run.id, stage: s.name, status: 'skipped' });
         }
+        continue;
       }
 
-      const stageDuration = `${Math.round((Date.now() - stageStart) / 1000)}s`;
-      stageResults.push({ name: stage.name, status: stageStatus, duration: stageDuration, logs: stageLogs });
-      broadcast('pipeline:stage', { runId: run.id, stage: stage.name, status: stageStatus, duration: stageDuration });
-
-      if (stageStatus === 'passed') {
-        broadcast('pipeline:log', { runId: run.id, stage: stage.name, line: `✓ ${stage.name} completed (${stageDuration})` });
+      if (batch.length === 1) {
+        const result = await runStage(batch[0], workDir, run.id);
+        stageResults.push(result);
+        if (result.status === 'failed') failed = true;
+      } else {
+        broadcast('pipeline:log', { runId: run.id, stage: 'parallel', line: `> Running ${batch.length} stages in parallel: ${batch.map(s => s.name).join(', ')}` });
+        const results = await Promise.all(batch.map(s => runStage(s, workDir, run.id)));
+        stageResults.push(...results);
+        if (results.some(r => r.status === 'failed')) failed = true;
       }
     }
 
-    const finalStatus = failed ? 'failed' : 'passed';
+    const finalStatus = timedOut ? 'failed' : (failed ? 'failed' : 'passed');
     await finishRun(pipeline, run, stageResults, startTime, finalStatus);
 
   } catch (err) {
     stageResults.push({ name: 'System', status: 'failed', duration: '—', logs: [`Internal error: ${err.message}`] });
     await finishRun(pipeline, run, stageResults, startTime, 'failed');
   } finally {
-    // Cleanup
+    clearTimeout(timeoutHandle);
     if (workDir) {
       try { await rm(workDir, { recursive: true, force: true }); } catch (e) { /* ignore */ }
     }
