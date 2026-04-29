@@ -163,6 +163,12 @@ CREATE TABLE IF NOT EXISTS iac_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_iac_runs_config ON iac_runs(iac_config_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_iac_runs_kind ON iac_runs(kind, status, started_at DESC);
+
+ALTER TABLE iac_runs ADD COLUMN IF NOT EXISTS pr_number INTEGER;
+ALTER TABLE iac_runs ADD COLUMN IF NOT EXISTS pr_url TEXT;
+ALTER TABLE iac_runs ADD COLUMN IF NOT EXISTS pr_branch TEXT;
+ALTER TABLE iac_runs ADD COLUMN IF NOT EXISTS pr_status TEXT;
+CREATE INDEX IF NOT EXISTS idx_iac_runs_pr ON iac_runs(pr_number) WHERE pr_number IS NOT NULL;
 `;
 
 export async function initDb() {

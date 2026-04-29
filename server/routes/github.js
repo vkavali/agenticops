@@ -4,6 +4,7 @@ import { query, execute, queryOne } from '../db.js';
 import { broadcast } from '../sse.js';
 import { encrypt, decrypt } from '../crypto.js';
 import { requireAuth } from '../auth.js';
+import { onRemediationPRMerged, onRemediationPRClosed } from '../iac.js';
 
 const router = Router();
 
@@ -258,6 +259,21 @@ router.post('/webhook', async (req, res) => {
     await execute('INSERT INTO activity (event,type,activity_timestamp) VALUES ($1,$2,$3)',
       [`PR ${action}: "${pr.title}" on ${repo} by ${pr.user?.login}`, 'pipeline', now]);
     broadcast('activity:new', { event: `PR ${action}: "${pr.title}" on ${repo}`, type: 'pipeline', timestamp: now });
+
+    // If this is one of our remediation PRs, drive the IaC state machine.
+    if (action === 'closed') {
+      try {
+        if (pr.merged) {
+          // Fire-and-forget — apply runs in the background and streams logs via SSE.
+          onRemediationPRMerged(pr.number, pr.merge_commit_sha)
+            .catch(err => console.error('Remediation PR apply failed:', err));
+        } else {
+          await onRemediationPRClosed(pr.number);
+        }
+      } catch (err) {
+        console.error('Remediation PR webhook handler error:', err);
+      }
+    }
   }
 
   res.status(200).send('OK');

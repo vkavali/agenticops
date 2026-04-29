@@ -279,6 +279,127 @@ function applyPatchToWorkdir(workDir, patch, runId) {
   });
 }
 
+const GITHUB_API = 'https://api.github.com';
+
+function shortRunId(runId) {
+  return runId.replace(/^iac-/, '').slice(0, 18);
+}
+
+/**
+ * Open a remediation PR for an agent-proposed patch:
+ *   clone → branch → apply patch → commit → push → POST /repos/.../pulls
+ * Persists pr_number/pr_url/pr_branch/pr_status on the iac_run row.
+ *
+ * The apply does NOT run here. terraform apply happens later, when the
+ * webhook for the merged PR fires (see routes/github.js).
+ */
+export async function openRemediationPR(config, sourceRun, { triggeredBy = null } = {}) {
+  if (!config.repo_full_name) throw new Error('Config has no linked repo');
+  if (!sourceRun.proposed_patch) throw new Error('Source run has no proposed patch');
+
+  const conn = await queryOne('SELECT access_token FROM github_connections ORDER BY created_at DESC LIMIT 1');
+  if (!conn?.access_token) throw new Error('No GitHub connection — cannot open PR');
+  const token = decrypt(conn.access_token);
+
+  const branch = `agenticops/remediation-${shortRunId(sourceRun.id)}`;
+  let workDir = null;
+  try {
+    workDir = await mkdtemp(path.join(os.tmpdir(), 'aops-pr-'));
+    const cloneUrl = `https://x-access-token:${token}@github.com/${config.repo_full_name}.git`;
+
+    broadcast('iac:log', { runId: sourceRun.id, stage: 'pr', line: `> Cloning ${config.repo_full_name}` });
+    let r = await spawnCmd('git', ['clone', '--depth', '1', '--branch', config.branch || 'main', cloneUrl, '.'], workDir, sourceRun.id, 'pr');
+    if (r.exitCode !== 0) throw new Error('clone failed');
+
+    r = await spawnCmd('git', ['checkout', '-b', branch], workDir, sourceRun.id, 'pr');
+    if (r.exitCode !== 0) throw new Error('branch creation failed');
+
+    if (!await applyPatchToWorkdir(workDir, sourceRun.proposed_patch, sourceRun.id)) {
+      throw new Error('git apply failed — patch did not apply cleanly');
+    }
+
+    // Anonymous-friendly committer identity. Real users would configure this.
+    r = await spawnCmd('git', ['-c', 'user.email=agent@agenticops.local', '-c', 'user.name=AgenticOps Agent',
+      'commit', '-am', `agent: remediate ${sourceRun.incident_id || sourceRun.id}`],
+      workDir, sourceRun.id, 'pr');
+    if (r.exitCode !== 0) throw new Error('commit failed');
+
+    r = await spawnCmd('git', ['push', '-u', 'origin', branch], workDir, sourceRun.id, 'pr');
+    if (r.exitCode !== 0) throw new Error('push failed');
+
+    broadcast('iac:log', { runId: sourceRun.id, stage: 'pr', line: '> Opening pull request' });
+    const body = [
+      sourceRun.agent_diagnosis || '_Agent diagnosis unavailable._',
+      '',
+      '---',
+      `Opened by AgenticOps for ${sourceRun.incident_id ? `incident **${sourceRun.incident_id}**` : 'a drift event'}.`,
+      `Source run: \`${sourceRun.id}\`. Approval gate: \`${sourceRun.gate_id || 'n/a'}\`.`,
+      'Merging this PR will trigger \`terraform apply\` on the target environment.',
+    ].join('\n');
+
+    const prRes = await fetch(`${GITHUB_API}/repos/${config.repo_full_name}/pulls`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'AgenticOps',
+      },
+      body: JSON.stringify({
+        title: `agent: remediate ${sourceRun.incident_id || sourceRun.id}`,
+        head: branch,
+        base: config.branch || 'main',
+        body,
+      }),
+    });
+    const pr = await prRes.json();
+    if (!prRes.ok || !pr.number) {
+      throw new Error(`PR creation failed: ${pr.message || prRes.status}`);
+    }
+
+    await execute(
+      'UPDATE iac_runs SET pr_number=$1, pr_url=$2, pr_branch=$3, pr_status=$4 WHERE id=$5',
+      [pr.number, pr.html_url, branch, 'open', sourceRun.id]
+    );
+    broadcast('iac:log', { runId: sourceRun.id, stage: 'pr', line: `✓ PR #${pr.number} opened: ${pr.html_url}` });
+    broadcast('iac:pr-opened', { runId: sourceRun.id, prNumber: pr.number, prUrl: pr.html_url });
+    return { prNumber: pr.number, prUrl: pr.html_url, prBranch: branch };
+  } finally {
+    if (workDir) { try { await rm(workDir, { recursive: true, force: true }); } catch {} }
+  }
+}
+
+/**
+ * Called by the GitHub webhook when a remediation PR is merged.
+ * Triggers terraform apply against the merged base branch.
+ */
+export async function onRemediationPRMerged(prNumber, mergedSha) {
+  const run = await queryOne(
+    'SELECT * FROM iac_runs WHERE pr_number=$1 AND pr_status=$2',
+    [prNumber, 'open']
+  );
+  if (!run) return null;
+  await execute("UPDATE iac_runs SET pr_status='merged' WHERE id=$1", [run.id]);
+  broadcast('iac:pr-merged', { runId: run.id, prNumber, mergedSha });
+
+  const config = await queryOne('SELECT * FROM iac_configs WHERE id=$1', [run.iac_config_id]);
+  if (!config) return null;
+
+  // Run terraform apply against the merged base. We pass the source run so
+  // runApply records the lineage; the patch is already merged into the base
+  // branch, so we skip the in-place git apply.
+  return runApply(config, { ...run, proposed_patch: null }, { triggeredBy: `pr-merge:#${prNumber}` });
+}
+
+export async function onRemediationPRClosed(prNumber) {
+  const run = await queryOne(
+    'SELECT id FROM iac_runs WHERE pr_number=$1 AND pr_status=$2',
+    [prNumber, 'open']
+  );
+  if (!run) return;
+  await execute("UPDATE iac_runs SET pr_status='closed' WHERE id=$1", [run.id]);
+  broadcast('iac:pr-closed', { runId: run.id, prNumber });
+}
+
 // Drift detection sweep — run plan against every config whose interval has elapsed.
 const SWEEP_INTERVAL = 5 * 60 * 1000; // every 5 min check whether configs are due
 

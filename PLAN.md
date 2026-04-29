@@ -93,9 +93,17 @@ with the live agent-proposed patch when one exists.
       `/api/iac/latest-proposal` and renders the agent's diagnosis +
       unified diff. Falls back to the demo diff only when no real proposal
       exists yet.
-- [ ] **Follow-on:** Auto-PR flow (commit patch to branch, open PR, wait
-      for CI, merge → apply). Currently the apply happens in-place on a
-      fresh clone with `git apply` then `terraform apply -auto-approve`.
+- [x] Auto-PR flow: `openRemediationPR()` clones, creates a branch
+      (`agenticops/remediation-<runId>`), applies the patch, commits with
+      the agent's identity, pushes, and opens a PR via the GitHub API.
+      The diagnosis goes into the PR body; gate id + source run id are
+      cited. `/api/iac/runs/:id/apply` defaults to PR mode when the
+      config has a linked repo (`mode: 'in-place'` overrides). Webhook
+      handler in `routes/github.js` watches `pull_request.closed` events
+      — `merged: true` triggers `terraform apply` against the merged
+      base; `merged: false` marks the run closed.
+- [ ] **Follow-on:** Wait for CI checks before allowing merge (currently
+      the human merging the PR is the gate).
 - [ ] **Follow-on:** TF state visualization driving the topology view.
 - [ ] **Follow-on:** Rollback by re-running plan/apply against the
       previous git SHA.

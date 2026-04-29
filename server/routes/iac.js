@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { query, queryOne, execute } from '../db.js';
 import { broadcast } from '../sse.js';
 import { requireAuth } from '../auth.js';
-import { runPlan, runApply, cancelRun } from '../iac.js';
+import { runPlan, runApply, cancelRun, openRemediationPR } from '../iac.js';
 import { isAgentEnabled } from '../agent.js';
 
 const router = Router();
@@ -116,8 +116,11 @@ router.post('/runs/:id/cancel', operator, async (req, res) => {
   res.json({ ok });
 });
 
-// Apply a previously-approved run. The gate must already be approved; this
-// endpoint just verifies and kicks off the apply.
+// Apply a previously-approved run. The gate must already be approved.
+// Two modes:
+//   - mode='pr' (default if config has a repo): open a remediation PR. The
+//     terraform apply runs later, when the webhook for the merged PR fires.
+//   - mode='in-place': clone, git apply, terraform apply. Bypasses GitHub.
 router.post('/runs/:id/apply', operator, async (req, res) => {
   const run = await queryOne('SELECT * FROM iac_runs WHERE id=$1', [req.params.id]);
   if (!run) return res.status(404).json({ error: 'Run not found' });
@@ -128,9 +131,24 @@ router.post('/runs/:id/apply', operator, async (req, res) => {
     return res.status(409).json({ error: `Gate ${run.gate_id} is ${gate?.status || 'missing'} — apply blocked` });
   }
   const config = await queryOne('SELECT * FROM iac_configs WHERE id=$1', [run.iac_config_id]);
+  if (!config) return res.status(404).json({ error: 'Config not found' });
+
+  const mode = req.body?.mode || (config.repo_full_name ? 'pr' : 'in-place');
+
+  if (mode === 'pr') {
+    if (run.pr_number) return res.status(409).json({ error: `PR #${run.pr_number} already open` });
+    try {
+      const result = await openRemediationPR(config, run, { triggeredBy: req.auth?.label || null });
+      return res.status(202).json({ ok: true, mode: 'pr', ...result });
+    } catch (err) {
+      console.error('Open PR failed:', err);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
   runApply(config, run, { triggeredBy: req.auth?.label || null })
     .catch(err => console.error('Apply run failed:', err));
-  res.status(202).json({ ok: true });
+  res.status(202).json({ ok: true, mode: 'in-place' });
 });
 
 export default router;

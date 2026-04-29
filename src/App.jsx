@@ -242,6 +242,22 @@ export default function App() {
                 </div>
               )}
               <DiffStats patch={agentProposal?.proposed_patch} />
+              {agentProposal?.pr_url && (
+                <div className="mt-3 border border-gray-900 bg-gray-50 p-3 flex items-center justify-between">
+                  <div className="text-[11px] font-mono text-gray-700">
+                    PR <span className="text-gray-900 font-bold">#{agentProposal.pr_number}</span>
+                    <span className={`ml-2 px-1.5 py-0.5 border text-[9px] uppercase tracking-widest font-bold ${
+                      agentProposal.pr_status === 'merged' ? 'bg-green-50 text-green-700 border-green-200' :
+                      agentProposal.pr_status === 'closed' ? 'bg-gray-100 text-gray-600 border-gray-300' :
+                      'bg-amber-50 text-amber-700 border-amber-200'
+                    }`}>{agentProposal.pr_status || 'open'}</span>
+                  </div>
+                  <a href={agentProposal.pr_url} target="_blank" rel="noreferrer"
+                    className="text-[11px] font-bold uppercase tracking-widest text-gray-900 hover:underline">
+                    View on GitHub →
+                  </a>
+                </div>
+              )}
               {agentProposal?.gate_id && (
                 <div className="mt-3 text-[11px] font-mono text-gray-500">
                   Gate <span className="text-gray-900 font-bold">{agentProposal.gate_id}</span> &nbsp;·&nbsp;
