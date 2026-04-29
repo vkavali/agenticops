@@ -62,7 +62,7 @@ const ENVIRONMENTS = ['development', 'staging', 'production'];
 
 const AppContext = createContext(null);
 
-export function AppProvider({ children }) {
+export function AppProvider({ children, me = null }) {
   const [isHydrated, setIsHydrated] = useState(false);
   const [services, setServices] = useState([]);
   const [nodes, setNodes] = useState([]);
@@ -374,6 +374,7 @@ export function AppProvider({ children }) {
 
   const value = {
     isHydrated,
+    me,
     services, setServices,
     nodes, setNodes,
     links,

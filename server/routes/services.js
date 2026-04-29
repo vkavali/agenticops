@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { query, execute } from '../db.js';
 import { broadcast } from '../sse.js';
+import { requireAuth } from '../auth.js';
 
 const router = Router();
 
@@ -9,7 +10,7 @@ router.get('/', async (req, res) => {
   res.json(rows);
 });
 
-router.patch('/:id', async (req, res) => {
+router.patch('/:id', requireAuth('operator'), async (req, res) => {
   const { id } = req.params;
   const fields = req.body;
   const sets = []; const vals = []; let i = 1;

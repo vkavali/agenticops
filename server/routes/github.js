@@ -2,6 +2,8 @@ import { Router } from 'express';
 import crypto from 'crypto';
 import { query, execute, queryOne } from '../db.js';
 import { broadcast } from '../sse.js';
+import { encrypt, decrypt } from '../crypto.js';
+import { requireAuth } from '../auth.js';
 
 const router = Router();
 
@@ -10,8 +12,12 @@ const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET;
 const GITHUB_REDIRECT_URI = process.env.GITHUB_REDIRECT_URI; // e.g. https://your-app.railway.app/api/github/callback
 const GITHUB_API = 'https://api.github.com';
 
+// Mutating routes require operator role. OAuth callback + webhook are
+// authenticated externally (state param + HMAC signature).
+const operator = requireAuth('operator');
+
 // ── OAuth: Start ──
-router.get('/authorize', (req, res) => {
+router.get('/authorize', operator, (req, res) => {
   const state = crypto.randomBytes(16).toString('hex');
   const url = `https://github.com/login/oauth/authorize?client_id=${GITHUB_CLIENT_ID}&redirect_uri=${encodeURIComponent(GITHUB_REDIRECT_URI)}&scope=repo,write:repo_hook&state=${state}`;
   res.json({ url, state });
@@ -38,10 +44,10 @@ router.get('/callback', async (req, res) => {
     });
     const user = await userRes.json();
 
-    // Store connection
+    // Store connection (token encrypted at rest)
     await execute(
       'INSERT INTO github_connections (access_token, github_user, github_avatar, scopes) VALUES ($1, $2, $3, $4)',
-      [tokenData.access_token, user.login, user.avatar_url, tokenData.scope]
+      [encrypt(tokenData.access_token), user.login, user.avatar_url, tokenData.scope]
     );
 
     broadcast('github:connected', { user: user.login, avatar: user.avatar_url });
@@ -55,14 +61,14 @@ router.get('/callback', async (req, res) => {
 });
 
 // ── Connection status ──
-router.get('/status', async (req, res) => {
+router.get('/status', requireAuth('viewer'), async (req, res) => {
   const conn = await queryOne('SELECT id, github_user, github_avatar, scopes, created_at FROM github_connections ORDER BY created_at DESC LIMIT 1');
   const repos = conn ? await query('SELECT * FROM connected_repos WHERE github_connection_id = $1', [conn.id]) : [];
   res.json({ connected: !!conn, connection: conn, repos });
 });
 
 // ── Disconnect ──
-router.delete('/disconnect', async (req, res) => {
+router.delete('/disconnect', operator, async (req, res) => {
   await execute('DELETE FROM connected_repos');
   await execute('DELETE FROM github_connections');
   broadcast('github:disconnected', {});
@@ -70,14 +76,15 @@ router.delete('/disconnect', async (req, res) => {
 });
 
 // ── List user's repos ──
-router.get('/repos', async (req, res) => {
+router.get('/repos', requireAuth('viewer'), async (req, res) => {
   const conn = await queryOne('SELECT access_token FROM github_connections ORDER BY created_at DESC LIMIT 1');
   if (!conn) return res.status(401).json({ error: 'Not connected to GitHub' });
+  const accessToken = decrypt(conn.access_token);
 
   try {
     const page = parseInt(req.query.page) || 1;
     const ghRes = await fetch(`${GITHUB_API}/user/repos?per_page=30&page=${page}&sort=updated&affiliation=owner,collaborator`, {
-      headers: { Authorization: `Bearer ${conn.access_token}`, 'User-Agent': 'AgenticOps' },
+      headers: { Authorization: `Bearer ${accessToken}`, 'User-Agent': 'AgenticOps' },
     });
     const repos = await ghRes.json();
     // Mark which ones are already connected
@@ -96,11 +103,12 @@ router.get('/repos', async (req, res) => {
 });
 
 // ── Connect a repo (set up webhook) ──
-router.post('/repos/:owner/:repo/connect', async (req, res) => {
+router.post('/repos/:owner/:repo/connect', operator, async (req, res) => {
   const { owner, repo } = req.params;
   const fullName = `${owner}/${repo}`;
   const conn = await queryOne('SELECT id, access_token FROM github_connections ORDER BY created_at DESC LIMIT 1');
   if (!conn) return res.status(401).json({ error: 'Not connected to GitHub' });
+  const accessToken = decrypt(conn.access_token);
 
   const webhookSecret = crypto.randomBytes(20).toString('hex');
   const webhookUrl = `${process.env.APP_URL || GITHUB_REDIRECT_URI?.replace('/api/github/callback', '')}/api/github/webhook`;
@@ -109,7 +117,7 @@ router.post('/repos/:owner/:repo/connect', async (req, res) => {
     // Create webhook on GitHub
     const whRes = await fetch(`${GITHUB_API}/repos/${fullName}/hooks`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${conn.access_token}`, 'Content-Type': 'application/json', 'User-Agent': 'AgenticOps' },
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json', 'User-Agent': 'AgenticOps' },
       body: JSON.stringify({
         name: 'web',
         active: true,
@@ -126,14 +134,14 @@ router.post('/repos/:owner/:repo/connect', async (req, res) => {
 
     // Get repo info
     const repoRes = await fetch(`${GITHUB_API}/repos/${fullName}`, {
-      headers: { Authorization: `Bearer ${conn.access_token}`, 'User-Agent': 'AgenticOps' },
+      headers: { Authorization: `Bearer ${accessToken}`, 'User-Agent': 'AgenticOps' },
     });
     const repoInfo = await repoRes.json();
 
-    // Store connected repo
+    // Store connected repo (webhook secret encrypted at rest)
     await execute(
       'INSERT INTO connected_repos (github_connection_id, repo_full_name, repo_url, default_branch, webhook_id, webhook_secret) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (repo_full_name) DO UPDATE SET webhook_id=$5, webhook_secret=$6',
-      [conn.id, fullName, repoInfo.html_url, repoInfo.default_branch, webhook.id, webhookSecret]
+      [conn.id, fullName, repoInfo.html_url, repoInfo.default_branch, webhook.id, encrypt(webhookSecret)]
     );
 
     // Add activity
@@ -151,7 +159,7 @@ router.post('/repos/:owner/:repo/connect', async (req, res) => {
 });
 
 // ── Disconnect a repo ──
-router.delete('/repos/:owner/:repo/disconnect', async (req, res) => {
+router.delete('/repos/:owner/:repo/disconnect', operator, async (req, res) => {
   const { owner, repo } = req.params;
   const fullName = `${owner}/${repo}`;
   const conn = await queryOne('SELECT access_token FROM github_connections ORDER BY created_at DESC LIMIT 1');
@@ -162,7 +170,7 @@ router.delete('/repos/:owner/:repo/disconnect', async (req, res) => {
     try {
       await fetch(`${GITHUB_API}/repos/${fullName}/hooks/${repoRow.webhook_id}`, {
         method: 'DELETE',
-        headers: { Authorization: `Bearer ${conn.access_token}`, 'User-Agent': 'AgenticOps' },
+        headers: { Authorization: `Bearer ${decrypt(conn.access_token)}`, 'User-Agent': 'AgenticOps' },
       });
     } catch (err) { /* best effort */ }
   }
@@ -173,20 +181,27 @@ router.delete('/repos/:owner/:repo/disconnect', async (req, res) => {
 });
 
 // ── Webhook receiver ──
+// NOTE: relies on rawBody captured by express.json's verify hook (see server/index.js)
 router.post('/webhook', async (req, res) => {
   const event = req.headers['x-github-event'];
   const signature = req.headers['x-hub-signature-256'];
   const payload = req.body;
 
-  // Verify signature
   const repo = payload.repository?.full_name;
   if (!repo) return res.status(400).send('No repo');
 
   const repoRow = await queryOne('SELECT * FROM connected_repos WHERE repo_full_name = $1', [repo]);
   if (!repoRow) return res.status(404).send('Repo not connected');
 
-  // Verify HMAC (if we have raw body — for now trust it)
-  // TODO: verify signature with repoRow.webhook_secret
+  // Verify HMAC against stored secret
+  const secret = decrypt(repoRow.webhook_secret);
+  if (!signature || !req.rawBody || !secret) return res.status(401).send('Unsigned');
+  const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(req.rawBody).digest('hex');
+  const sigBuf = Buffer.from(signature);
+  const expBuf = Buffer.from(expected);
+  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+    return res.status(401).send('Invalid signature');
+  }
 
   const now = Date.now();
 

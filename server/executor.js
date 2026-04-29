@@ -4,6 +4,7 @@ import path from 'path';
 import os from 'os';
 import { queryOne, execute, query } from './db.js';
 import { broadcast } from './sse.js';
+import { decrypt } from './crypto.js';
 
 // ============================================================
 // PIPELINE EXECUTION ENGINE
@@ -34,7 +35,7 @@ export async function executePipeline(pipeline, options = {}) {
     return simulateRun(pipeline, options);
   }
 
-  const token = conn?.access_token;
+  const token = conn?.access_token ? decrypt(conn.access_token) : null;
   const branch = options.branch || pipeline.branch || 'main';
   const now = Date.now();
 

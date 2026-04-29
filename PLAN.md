@@ -26,18 +26,28 @@ approval. Harness has the breadth; we win on the autonomy loop.
 
 ## Phased delivery
 
-### Phase 0 — Foundation (must come first)
+### Phase 0 — Foundation (must come first) ✅
 
 Blocks every other module. No agent should mutate infra without these.
 
-- [ ] Auth middleware (bearer token via env, swap for OIDC later)
-- [ ] RBAC: roles (viewer, operator, admin), per-route guards
-- [ ] `audit_log` table — append-only record of every mutation
-- [ ] Secrets manager: encrypt `github_connections.access_token` and
-      `cloud_connectors.credentials` at rest (AES-256-GCM, key from env)
-- [ ] Approval gates primitive — reusable across pipelines, IaC, chaos
-- [ ] SSE heartbeat + per-client error isolation in `broadcast()`
-- [ ] CORS lockdown (allowlist instead of `*`)
+- [x] Auth middleware (bearer token via env, swap for OIDC later) — `server/auth.js`
+- [x] RBAC: roles (viewer, operator, admin), per-route guards
+- [x] `audit_log` table — append-only record of every mutation — `server/audit.js`
+- [x] Secrets manager: encrypt `github_connections.access_token`, `connected_repos.webhook_secret`,
+      and `cloud_connectors.credentials` at rest (AES-256-GCM) — `server/crypto.js` + `migrate-secrets.js`
+- [x] Approval gates primitive — reusable across pipelines, IaC, chaos — `server/routes/gates.js`
+- [x] SSE heartbeat + per-client error isolation in `broadcast()` — `server/sse.js`
+- [x] CORS lockdown (allowlist via `APP_CORS_ORIGINS`)
+- [x] GitHub webhook HMAC signature verification (was a TODO)
+- [x] Frontend token gate — `src/TokenGate.jsx`
+
+#### Bootstrap
+
+1. `openssl rand -hex 32` → set `APP_ENCRYPTION_KEY`
+2. Generate a random admin token → set `APP_BOOTSTRAP_ADMIN_TOKEN`
+3. Boot — the bootstrap token becomes the first admin
+4. `curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -d '{"role":"operator","label":"alice"}' /api/tokens`
+5. Hand that token to the user; they paste it into the TokenGate prompt
 
 ### Phase 1 — Close obvious CI/CD gaps
 

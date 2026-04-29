@@ -2,8 +2,10 @@ import { Router } from 'express';
 import { query, execute, queryOne } from '../db.js';
 import { broadcast } from '../sse.js';
 import { executePipeline, cancelRun } from '../executor.js';
+import { requireAuth } from '../auth.js';
 
 const router = Router();
+const operator = requireAuth('operator');
 
 // List all pipelines with their runs embedded
 router.get('/', async (req, res) => {
@@ -22,8 +24,8 @@ router.get('/', async (req, res) => {
   res.json(result);
 });
 
-// Create pipeline
-router.post('/', async (req, res) => {
+// Create pipeline (defines what shell commands the executor runs — operator only)
+router.post('/', operator, async (req, res) => {
   const { id, name, branch, stages, repo_full_name } = req.body;
   const pid = id || `pipe-${Date.now()}`;
   await execute(
@@ -36,7 +38,7 @@ router.post('/', async (req, res) => {
 });
 
 // Update pipeline
-router.put('/:id', async (req, res) => {
+router.put('/:id', operator, async (req, res) => {
   const { name, branch, stages, trigger_config, schedule, repo_full_name } = req.body;
   await execute(
     'UPDATE pipelines SET name=COALESCE($1,name), branch=COALESCE($2,branch), stages=COALESCE($3,stages), trigger_config=COALESCE($4,trigger_config), schedule=COALESCE($5,schedule), repo_full_name=COALESCE($6,repo_full_name) WHERE id=$7',
@@ -47,14 +49,14 @@ router.put('/:id', async (req, res) => {
 });
 
 // Delete pipeline
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', operator, async (req, res) => {
   await execute('DELETE FROM pipelines WHERE id=$1', [req.params.id]);
   broadcast('pipeline:deleted', { id: req.params.id });
   res.json({ ok: true });
 });
 
-// Trigger a real pipeline run (uses executor)
-router.post('/:id/run', async (req, res) => {
+// Trigger a real pipeline run (uses executor — runs arbitrary shell, operator only)
+router.post('/:id/run', operator, async (req, res) => {
   const pipe = await queryOne('SELECT * FROM pipelines WHERE id=$1', [req.params.id]);
   if (!pipe) return res.status(404).json({ error: 'Pipeline not found' });
 
@@ -73,7 +75,7 @@ router.post('/:id/run', async (req, res) => {
 });
 
 // Cancel a running pipeline
-router.post('/:pipeId/runs/:runId/cancel', async (req, res) => {
+router.post('/:pipeId/runs/:runId/cancel', operator, async (req, res) => {
   const cancelled = cancelRun(req.params.runId);
   if (cancelled) {
     await execute('UPDATE pipeline_runs SET status=$1 WHERE id=$2', ['cancelled', req.params.runId]);

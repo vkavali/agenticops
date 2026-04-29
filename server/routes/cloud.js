@@ -1,30 +1,33 @@
 import { Router } from 'express';
 import { query, execute, queryOne } from '../db.js';
 import { broadcast } from '../sse.js';
+import { encrypt } from '../crypto.js';
+import { requireAuth } from '../auth.js';
 
 const router = Router();
 
-// List all cloud connectors
-router.get('/', async (req, res) => {
+// List all cloud connectors (credentials never returned over the wire)
+router.get('/', requireAuth('viewer'), async (req, res) => {
   const rows = await query('SELECT id, provider, name, region, status, created_at FROM cloud_connectors ORDER BY created_at DESC');
   res.json(rows);
 });
 
 // Connect to a new cloud provider
-router.post('/', async (req, res) => {
+router.post('/', requireAuth('admin'), async (req, res) => {
   const { provider, name, region, credentials } = req.body;
   const id = `cc-${Date.now()}`;
   const now = Date.now();
 
-  // Basic validation (in a real app, we'd verify the credentials by calling the provider's API)
   if (!provider || !name || !credentials) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
 
   try {
+    // Credentials encrypted at rest. We wrap the JSON blob in a single envelope
+    // so partial reads can't leak fields.
     await execute(
       'INSERT INTO cloud_connectors (id, provider, name, region, credentials, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-      [id, provider, name, region, JSON.stringify(credentials), 'connected', now]
+      [id, provider, name, region, JSON.stringify({ enc: encrypt(JSON.stringify(credentials)) }), 'connected', now]
     );
 
     await execute('INSERT INTO activity (event, type, activity_timestamp) VALUES ($1, $2, $3)',
@@ -42,7 +45,7 @@ router.post('/', async (req, res) => {
 });
 
 // Disconnect a cloud provider
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', requireAuth('admin'), async (req, res) => {
   const { id } = req.params;
   const cc = await queryOne('SELECT * FROM cloud_connectors WHERE id=$1', [id]);
   

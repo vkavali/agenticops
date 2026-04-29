@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import { query, execute, queryOne } from '../db.js';
 import { broadcast } from '../sse.js';
+import { requireAuth } from '../auth.js';
 
 const router = Router();
+const operator = requireAuth('operator');
 
 router.get('/nodes', async (req, res) => {
   const rows = await query('SELECT * FROM nodes');
@@ -17,7 +19,7 @@ router.get('/links', async (req, res) => {
   })));
 });
 
-router.patch('/nodes/:id', async (req, res) => {
+router.patch('/nodes/:id', operator, async (req, res) => {
   const { id } = req.params;
   const { x, y, status } = req.body;
   const sets = []; const vals = []; let i = 1;
@@ -32,7 +34,7 @@ router.patch('/nodes/:id', async (req, res) => {
   res.json(row);
 });
 
-router.post('/remediate', async (req, res) => {
+router.post('/remediate', operator, async (req, res) => {
   // Fix lambda-post node
   await execute("UPDATE nodes SET status='healthy' WHERE id='lambda-post'");
   // Fix api-service

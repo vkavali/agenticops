@@ -1,7 +1,9 @@
 import { Router } from 'express';
 import { query, execute, queryOne } from '../db.js';
+import { requireAuth } from '../auth.js';
 
 const router = Router();
+const admin = requireAuth('admin');
 
 router.get('/:section', async (req, res) => {
   const row = await queryOne('SELECT value FROM settings WHERE key=$1', [req.params.section]);
@@ -9,7 +11,7 @@ router.get('/:section', async (req, res) => {
   res.json(row.value);
 });
 
-router.put('/:section', async (req, res) => {
+router.put('/:section', admin, async (req, res) => {
   const { section } = req.params;
   await execute(
     'INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value=$2',
@@ -19,7 +21,7 @@ router.put('/:section', async (req, res) => {
 });
 
 // Add item to array section
-router.post('/:section/items', async (req, res) => {
+router.post('/:section/items', admin, async (req, res) => {
   const { section } = req.params;
   const row = await queryOne('SELECT value FROM settings WHERE key=$1', [section]);
   if (!row) return res.status(404).json({ error: 'Section not found' });
@@ -30,7 +32,7 @@ router.post('/:section/items', async (req, res) => {
 });
 
 // Delete item from array section
-router.delete('/:section/items/:itemId', async (req, res) => {
+router.delete('/:section/items/:itemId', admin, async (req, res) => {
   const { section, itemId } = req.params;
   const row = await queryOne('SELECT value FROM settings WHERE key=$1', [section]);
   if (!row) return res.status(404).json({ error: 'Section not found' });

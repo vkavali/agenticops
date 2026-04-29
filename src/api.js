@@ -3,14 +3,31 @@
 // ============================================================
 
 const BASE = import.meta.env.VITE_API_URL || '';
+const TOKEN_KEY = 'aops_token';
+
+export function getToken() {
+  try { return localStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; }
+}
+
+export function setToken(token) {
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch { /* private mode etc */ }
+}
 
 async function request(method, path, body) {
-  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  const headers = { 'Content-Type': 'application/json' };
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const opts = { method, headers };
   if (body) opts.body = JSON.stringify(body);
   const res = await fetch(`${BASE}${path}`, opts);
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || res.statusText);
+    const e = new Error(err.error || res.statusText);
+    e.status = res.status;
+    throw e;
   }
   return res.json();
 }
@@ -74,6 +91,9 @@ const api = {
   // Health
   health: () => request('GET', '/api/health'),
 
+  // Auth — validates the current token and returns role/label
+  me: () => request('GET', '/api/auth/me'),
+
   // GitHub
   github: {
     authorize: () => request('GET', '/api/github/authorize'),
@@ -95,34 +115,53 @@ const api = {
     connect: (data) => request('POST', '/api/cloud', data),
     disconnect: (id) => request('DELETE', `/api/cloud/${id}`),
   },
+
+  // API Tokens (admin only)
+  tokens: {
+    list: () => request('GET', '/api/tokens'),
+    mint: (role, label) => request('POST', '/api/tokens', { role, label }),
+    revoke: (id) => request('DELETE', `/api/tokens/${id}`),
+  },
+
+  // Approval Gates
+  gates: {
+    list: (filters = {}) => {
+      const qs = new URLSearchParams(filters).toString();
+      return request('GET', `/api/gates${qs ? '?' + qs : ''}`);
+    },
+    get: (id) => request('GET', `/api/gates/${id}`),
+    decide: (id, decision) => request('POST', `/api/gates/${id}/decide`, { decision }),
+    create: (data) => request('POST', '/api/gates', data),
+  },
+
+  // Audit log (admin only)
+  audit: {
+    list: (limit = 100, offset = 0) => request('GET', `/api/audit?limit=${limit}&offset=${offset}`),
+  },
 };
 
 // ── SSE Connection ──
 export function subscribeSSE(onEvent) {
-  const url = `${BASE}/api/events`;
+  const token = getToken();
+  // EventSource can't set Authorization header — pass token as query param.
+  const url = `${BASE}/api/events${token ? `?token=${encodeURIComponent(token)}` : ''}`;
   let es = new EventSource(url);
   let reconnectTimer = null;
 
-  es.onmessage = (e) => {
-    try {
-      const data = JSON.parse(e.data);
-      onEvent(data);
-    } catch (err) { /* ignore parse errors */ }
-  };
+  function attach(source) {
+    source.onmessage = (e) => {
+      try { onEvent(JSON.parse(e.data)); } catch { /* ignore */ }
+    };
+    source.onerror = () => {
+      source.close();
+      reconnectTimer = setTimeout(() => {
+        es = new EventSource(url);
+        attach(es);
+      }, 3000);
+    };
+  }
+  attach(es);
 
-  es.onerror = () => {
-    es.close();
-    // Reconnect after 3s
-    reconnectTimer = setTimeout(() => {
-      es = new EventSource(url);
-      es.onmessage = (e) => {
-        try { onEvent(JSON.parse(e.data)); } catch (err) { /* ignore */ }
-      };
-      es.onerror = () => { es.close(); };
-    }, 3000);
-  };
-
-  // Return cleanup function
   return () => {
     es.close();
     if (reconnectTimer) clearTimeout(reconnectTimer);

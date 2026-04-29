@@ -8,6 +8,9 @@ import { seed } from './seed.js';
 import { addClient } from './sse.js';
 import { startSimulation } from './simulation.js';
 import { startMonitoring } from './monitor.js';
+import { bootstrapAdmin, requireAuth } from './auth.js';
+import { auditMiddleware } from './audit.js';
+import { migrateSecretsAtRest } from './migrate-secrets.js';
 import servicesRouter from './routes/services.js';
 import pipelinesRouter from './routes/pipelines.js';
 import deploymentsRouter from './routes/deployments.js';
@@ -18,6 +21,9 @@ import activityRouter from './routes/activity.js';
 import githubRouter from './routes/github.js';
 import metricsRouter from './routes/metrics.js';
 import cloudRouter from './routes/cloud.js';
+import tokensRouter from './routes/tokens.js';
+import gatesRouter from './routes/gates.js';
+import auditRouter from './routes/audit.js';
 
 dotenv.config();
 
@@ -25,8 +31,42 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors());
-app.use(express.json());
+// CORS allowlist. Comma-separated origins via APP_CORS_ORIGINS.
+// Default to no cross-origin requests in production; allow localhost dev URLs otherwise.
+const corsOrigins = (process.env.APP_CORS_ORIGINS || 'http://localhost:5173,http://localhost:3000')
+  .split(',').map(s => s.trim()).filter(Boolean);
+app.use(cors({
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true); // same-origin / curl
+    if (corsOrigins.includes(origin)) return cb(null, true);
+    cb(new Error(`Origin ${origin} not allowed`));
+  },
+  credentials: true,
+}));
+
+// Capture raw body for webhook HMAC verification.
+app.use(express.json({
+  verify: (req, _res, buf) => { req.rawBody = buf; },
+  limit: '1mb',
+}));
+
+// Routes that bypass bearer auth (each has its own auth model).
+const PUBLIC_PATHS = new Set([
+  '/api/health',
+  '/api/events',          // SSE — auth via ?token= param inside addClient
+  '/api/github/callback', // OAuth redirect, validated by state
+  '/api/github/webhook',  // GitHub HMAC-signed
+]);
+
+// Global auth gate: every /api/* call needs at least viewer, except public paths.
+app.use((req, res, next) => {
+  if (!req.path.startsWith('/api/')) return next();
+  if (PUBLIC_PATHS.has(req.path)) return next();
+  return requireAuth('viewer')(req, res, next);
+});
+
+// Audit log: append-only record of every successful mutation.
+app.use(auditMiddleware);
 
 // API routes
 app.use('/api/services', servicesRouter);
@@ -39,12 +79,20 @@ app.use('/api/activity', activityRouter);
 app.use('/api/github', githubRouter);
 app.use('/api/metrics', metricsRouter);
 app.use('/api/cloud', cloudRouter);
+app.use('/api/tokens', tokensRouter);
+app.use('/api/gates', gatesRouter);
+app.use('/api/audit', auditRouter);
 
-// SSE endpoint
-app.get('/api/events', (req, res) => { addClient(res); });
+// SSE endpoint (auth handled inside addClient)
+app.get('/api/events', (req, res) => { addClient(req, res); });
 
-// Health check
+// Health check (public)
 app.get('/api/health', (req, res) => { res.json({ status: 'ok', uptime: process.uptime() }); });
+
+// Identity endpoint — returns the authenticated token's role/label.
+app.get('/api/auth/me', (req, res) => {
+  res.json({ role: req.auth.role, label: req.auth.label, tokenId: req.auth.tokenId });
+});
 
 // Serve production build
 const distPath = path.resolve(__dirname, '..', 'dist');
@@ -57,6 +105,8 @@ app.get(/^(?!\/api).*/, (req, res) => {
 async function start() {
   try {
     await initDb();
+    await migrateSecretsAtRest();
+    await bootstrapAdmin();
     await seed();
     startSimulation();
     startMonitoring();

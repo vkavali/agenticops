@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import { query, execute, queryOne } from '../db.js';
 import { broadcast } from '../sse.js';
+import { requireAuth } from '../auth.js';
 
 const router = Router();
+const operator = requireAuth('operator');
 const ENVS = ['development', 'staging', 'production'];
 
 router.get('/', async (req, res) => {
@@ -14,7 +16,7 @@ router.get('/', async (req, res) => {
   })));
 });
 
-router.post('/', async (req, res) => {
+router.post('/', operator, async (req, res) => {
   const { service, version, commit, msg, by, environments } = req.body;
   const id = `d-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const now = Date.now();
@@ -31,7 +33,7 @@ router.post('/', async (req, res) => {
   res.status(201).json(dep);
 });
 
-router.post('/:id/promote/:env', async (req, res) => {
+router.post('/:id/promote/:env', operator, async (req, res) => {
   const { id, env } = req.params;
   const envIndex = ENVS.indexOf(env);
   if (envIndex >= ENVS.length - 1) return res.status(400).json({ error: 'Already at highest environment' });
@@ -58,7 +60,7 @@ router.post('/:id/promote/:env', async (req, res) => {
   res.json({ ok: true, promoting: toEnv });
 });
 
-router.post('/:id/rollback/:env', async (req, res) => {
+router.post('/:id/rollback/:env', operator, async (req, res) => {
   const { id, env } = req.params;
   const dep = await queryOne('SELECT * FROM deployments WHERE id=$1', [id]);
   if (!dep) return res.status(404).json({ error: 'Deployment not found' });

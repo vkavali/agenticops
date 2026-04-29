@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import { query, execute, queryOne } from '../db.js';
 import { broadcast } from '../sse.js';
+import { requireAuth } from '../auth.js';
 
 const router = Router();
+const operator = requireAuth('operator');
 
 function getNow() {
   return new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -25,7 +27,7 @@ router.get('/', async (req, res) => {
   })));
 });
 
-router.post('/', async (req, res) => {
+router.post('/', operator, async (req, res) => {
   const { title, service, severity, assignee, description } = req.body;
   const id = await getNextIncidentId();
   const now = Date.now();
@@ -42,7 +44,7 @@ router.post('/', async (req, res) => {
   res.status(201).json(inc);
 });
 
-router.post('/:id/ack', async (req, res) => {
+router.post('/:id/ack', operator, async (req, res) => {
   const { id } = req.params;
   const inc = await queryOne('SELECT * FROM incidents WHERE id=$1', [id]);
   if (!inc) return res.status(404).json({ error: 'Not found' });
@@ -53,7 +55,7 @@ router.post('/:id/ack', async (req, res) => {
   res.json({ ok: true });
 });
 
-router.post('/:id/resolve', async (req, res) => {
+router.post('/:id/resolve', operator, async (req, res) => {
   const { id } = req.params;
   const inc = await queryOne('SELECT * FROM incidents WHERE id=$1', [id]);
   if (!inc) return res.status(404).json({ error: 'Not found' });
@@ -64,7 +66,7 @@ router.post('/:id/resolve', async (req, res) => {
   res.json({ ok: true });
 });
 
-router.post('/:id/comment', async (req, res) => {
+router.post('/:id/comment', operator, async (req, res) => {
   const { id } = req.params;
   const { comment } = req.body;
   const inc = await queryOne('SELECT * FROM incidents WHERE id=$1', [id]);
@@ -75,7 +77,7 @@ router.post('/:id/comment', async (req, res) => {
   res.json({ ok: true });
 });
 
-router.patch('/:id', async (req, res) => {
+router.patch('/:id', operator, async (req, res) => {
   const { id } = req.params;
   const { severity, assignee, title, description } = req.body;
   const sets = []; const vals = []; let i = 1;

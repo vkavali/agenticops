@@ -69,6 +69,37 @@ CREATE TABLE IF NOT EXISTS cloud_connectors (
   name TEXT NOT NULL, region TEXT, credentials JSONB,
   status TEXT DEFAULT 'connected', created_at BIGINT
 );
+CREATE TABLE IF NOT EXISTS api_tokens (
+  id SERIAL PRIMARY KEY,
+  token_hash TEXT NOT NULL UNIQUE,
+  role TEXT NOT NULL CHECK (role IN ('viewer','operator','admin')),
+  label TEXT,
+  created_at BIGINT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS audit_log (
+  id BIGSERIAL PRIMARY KEY,
+  actor TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target TEXT,
+  detail JSONB,
+  audit_timestamp BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(audit_timestamp DESC);
+CREATE TABLE IF NOT EXISTS approval_gates (
+  id TEXT PRIMARY KEY,
+  subject_type TEXT NOT NULL,
+  subject_id TEXT NOT NULL,
+  description TEXT,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','expired')),
+  required_role TEXT NOT NULL DEFAULT 'operator',
+  requested_by TEXT,
+  decided_by TEXT,
+  decided_at BIGINT,
+  payload JSONB,
+  created_at BIGINT NOT NULL,
+  expires_at BIGINT
+);
+CREATE INDEX IF NOT EXISTS idx_approval_gates_status ON approval_gates(status, created_at DESC);
 `;
 
 export async function initDb() {
