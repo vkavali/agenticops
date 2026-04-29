@@ -122,8 +122,14 @@ Schema + skeleton routes + minimal UI per module. Polish opportunistically.
       and burn rate. Burn rate ≥ alert threshold (default 2.0×) opens a
       critical incident, deduped against existing actives. CRUD at
       `/api/slos`, eval history at `/api/slos/:id/evals`.
-- [ ] **Feature Flags**: `flags`, `flag_rules`, evaluation API, agent-driven
-      gradual rollout (auto-pause on metric regression)
+- [x] **Feature Flags**: `flags` + `flag_rules` + `flag_rollouts` schema.
+      `server/flags.js` evaluator: enabled-check → priority-ordered rules
+      with conditions (equals/in/contains/gt/etc.) → stable sha1
+      bucketing for percentage rollout → default. Gradual-rollout
+      controller bumps `current_pct` every `increment_interval_ms`,
+      auto-pauses at 1.5× SLO burn and auto-rolls-back at 2× — the
+      agentic angle Harness can't tell as cleanly. `/api/flags`: CRUD,
+      rules, `POST /:key/evaluate`, rollout start/pause/resume/rollback.
 - [ ] **CCM**: AWS Cost Explorer / GCP Billing connectors, anomaly detection,
       idle-resource recommendations
 - [ ] **STO**: SAST/DAST/SCA orchestration as pipeline step types

@@ -178,6 +178,22 @@ const api = {
     rollback: (runId, body = {}) => request('POST', `/api/iac/runs/${runId}/rollback`, body),
   },
 
+  // Feature flags + agent-driven gradual rollout
+  flags: {
+    list: () => request('GET', '/api/flags'),
+    get: (key) => request('GET', `/api/flags/${key}`),
+    create: (data) => request('POST', '/api/flags', data),
+    update: (id, data) => request('PUT', `/api/flags/${id}`, data),
+    delete: (id) => request('DELETE', `/api/flags/${id}`),
+    addRule: (id, data) => request('POST', `/api/flags/${id}/rules`, data),
+    deleteRule: (id, ruleId) => request('DELETE', `/api/flags/${id}/rules/${ruleId}`),
+    evaluate: (key, context) => request('POST', `/api/flags/${key}/evaluate`, context || {}),
+    startRollout: (id, data) => request('POST', `/api/flags/${id}/rollout`, data || {}),
+    pauseRollout: (rolloutId, reason) => request('POST', `/api/flags/rollouts/${rolloutId}/pause`, { reason }),
+    resumeRollout: (rolloutId) => request('POST', `/api/flags/rollouts/${rolloutId}/resume`),
+    rollbackRollout: (rolloutId, reason) => request('POST', `/api/flags/rollouts/${rolloutId}/rollback`, { reason }),
+  },
+
   // SLOs / error budgets
   slos: {
     list: () => request('GET', '/api/slos'),

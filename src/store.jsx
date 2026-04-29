@@ -88,6 +88,7 @@ export function AppProvider({ children, me = null }) {
   const [artifacts, setArtifacts] = useState([]);
   const [slos, setSlos] = useState([]);
   const [sloEvals, setSloEvals] = useState({}); // { sloId: latestEval }
+  const [flags, setFlags] = useState([]);
 
   // ── Hydrate from API on mount ──
   useEffect(() => {
@@ -95,7 +96,7 @@ export function AppProvider({ children, me = null }) {
       try {
         const [svc, pips, deps, incs, act, nds, lnks, infState,
           envData, intData, secData, teamData, whData, polData, securityData, alertData, keyData, genData,
-          gatesData, tplData, artData, sloData,
+          gatesData, tplData, artData, sloData, flagData,
         ] = await Promise.all([
           api.services.list(),
           api.pipelines.list(),
@@ -119,6 +120,7 @@ export function AppProvider({ children, me = null }) {
           api.templates.list().catch(() => []),
           api.artifacts.list({ limit: 50 }).catch(() => []),
           api.slos.list().catch(() => []),
+          api.flags.list().catch(() => []),
         ]);
         setServices(svc);
         setPipelines(pips);
@@ -142,6 +144,7 @@ export function AppProvider({ children, me = null }) {
         setTemplates(tplData);
         setArtifacts(artData);
         setSlos(sloData);
+        setFlags(flagData);
       } catch (err) {
         console.error('Failed to hydrate from API:', err);
       }
@@ -225,6 +228,27 @@ export function AppProvider({ children, me = null }) {
           break;
         case 'slo:evaluated':
           setSloEvals(prev => ({ ...prev, [event.data.slo_id]: event.data }));
+          break;
+        case 'flag:created':
+          setFlags(prev => [{ ...event.data, rollout: null }, ...prev]);
+          break;
+        case 'flag:updated':
+          setFlags(prev => prev.map(f => f.id === event.data.id ? { ...f, ...event.data } : f));
+          break;
+        case 'flag:deleted':
+          setFlags(prev => prev.filter(f => f.id !== event.data.id));
+          break;
+        case 'flag:rollout-started':
+          setFlags(prev => prev.map(f => f.id === event.data.flag_id ? { ...f, rollout: event.data } : f));
+          break;
+        case 'flag:rollout-progress':
+        case 'flag:rollout-paused':
+        case 'flag:rollout-resumed':
+        case 'flag:rollout-rolled-back':
+          setFlags(prev => prev.map(f => {
+            if (!f.rollout || f.rollout.id !== event.data.id) return f;
+            return { ...f, rollout: { ...f.rollout, ...event.data } };
+          }));
           break;
       }
     });
@@ -441,6 +465,7 @@ export function AppProvider({ children, me = null }) {
     artifacts, setArtifacts,
     slos, setSlos,
     sloEvals,
+    flags, setFlags,
     toasts,
     activeIncidentCount, healthScore, securityScore, deploysToday, pipelineStats,
     toast, dismissToast, addActivity,

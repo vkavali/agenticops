@@ -198,6 +198,48 @@ CREATE TABLE IF NOT EXISTS slo_evals (
   alerting BOOLEAN DEFAULT false
 );
 CREATE INDEX IF NOT EXISTS idx_slo_evals_slo ON slo_evals(slo_id, evaluated_at DESC);
+
+-- Phase 3: feature flags with agent-driven gradual rollout
+CREATE TABLE IF NOT EXISTS flags (
+  id TEXT PRIMARY KEY,
+  key TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  description TEXT,
+  type TEXT NOT NULL CHECK (type IN ('boolean','string','number','json')),
+  default_value JSONB NOT NULL,
+  rolled_out_value JSONB,
+  enabled BOOLEAN DEFAULT true,
+  created_at BIGINT NOT NULL,
+  created_by TEXT
+);
+CREATE TABLE IF NOT EXISTS flag_rules (
+  id TEXT PRIMARY KEY,
+  flag_id TEXT NOT NULL REFERENCES flags(id) ON DELETE CASCADE,
+  priority INTEGER NOT NULL DEFAULT 0,
+  conditions JSONB NOT NULL DEFAULT '[]'::jsonb,
+  value JSONB NOT NULL,
+  description TEXT,
+  created_at BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_flag_rules_flag ON flag_rules(flag_id, priority);
+CREATE TABLE IF NOT EXISTS flag_rollouts (
+  id TEXT PRIMARY KEY,
+  flag_id TEXT NOT NULL REFERENCES flags(id) ON DELETE CASCADE,
+  start_pct NUMERIC(5,2) NOT NULL DEFAULT 0,
+  target_pct NUMERIC(5,2) NOT NULL DEFAULT 100,
+  current_pct NUMERIC(5,2) NOT NULL DEFAULT 0,
+  increment_pct NUMERIC(5,2) NOT NULL DEFAULT 10,
+  increment_interval_ms BIGINT NOT NULL DEFAULT 600000,
+  slo_id TEXT REFERENCES slos(id) ON DELETE SET NULL,
+  status TEXT NOT NULL DEFAULT 'running'
+    CHECK (status IN ('running','paused','complete','rolled-back')),
+  pause_reason TEXT,
+  started_at BIGINT NOT NULL,
+  last_increment_at BIGINT,
+  finished_at BIGINT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_flag_rollouts_active
+  ON flag_rollouts(flag_id) WHERE status IN ('running','paused');
 `;
 
 export async function initDb() {
