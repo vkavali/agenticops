@@ -1,6 +1,7 @@
 import { execute, queryOne } from './db.js';
 import { broadcast } from './sse.js';
 import { createGate } from './routes/gates.js';
+import { kubectlSetImage, kubectlRolloutStatus, kubectlRolloutUndo } from './k8s.js';
 
 // Deployment strategy engine.
 // Drives phase progression for rolling / canary / blue-green deploys against a
@@ -75,6 +76,47 @@ async function advancePhase(depId, env, strategy, phaseIdx) {
   inFlight.set(key, t);
 }
 
+// Resolves the K8s deploy target from the service definition. Format:
+//   service.deploy_target = {
+//     k8s: { connector_id, deployment, container, image_repo, namespace? }
+//   }
+// Returns null when the service hasn't been wired for real K8s deploys.
+async function resolveK8sTarget(serviceName) {
+  const svc = await queryOne('SELECT deploy_target FROM services WHERE name=$1 LIMIT 1', [serviceName]);
+  return svc?.deploy_target?.k8s || null;
+}
+
+// Real rolling deploy via kubectl. set image, then rollout status; on failure
+// rollout undo. Phase progression mirrors the simulated path so the UI is
+// agnostic about whether the deploy is real or modeled.
+async function realRollingDeploy(deployment, env, k8s) {
+  const image = `${k8s.image_repo}:${deployment.version}`;
+  const ctx = { runId: `${deployment.id}:${env}` };
+
+  await setPhase(deployment.id, env, { status: 'running', phase: 'set-image', strategy: 'rolling', progress: 20 });
+  const setRes = await kubectlSetImage(k8s.connector_id, k8s.deployment, k8s.container, image, ctx);
+  if (setRes.exitCode !== 0) {
+    await setPhase(deployment.id, env, { status: 'failed', phase: 'set-image-failed', progress: 0 });
+    return;
+  }
+
+  await setPhase(deployment.id, env, { status: 'running', phase: 'rolling-out', strategy: 'rolling', progress: 60 });
+  const statusRes = await kubectlRolloutStatus(k8s.connector_id, k8s.deployment, ctx);
+  if (statusRes.exitCode !== 0) {
+    await setPhase(deployment.id, env, { status: 'failed', phase: 'rollout-failed', progress: 60 });
+    // Try to undo so the cluster doesn't stay broken.
+    await kubectlRolloutUndo(k8s.connector_id, k8s.deployment, ctx).catch(() => {});
+    await execute('INSERT INTO activity (event,type,activity_timestamp) VALUES ($1,$2,$3)',
+      [`Rollout of ${deployment.service} ${deployment.version} failed in ${env}; auto-rolled-back`, 'deploy', Date.now()]);
+    return;
+  }
+
+  await setPhase(deployment.id, env, { status: 'passed', phase: 'complete', strategy: 'rolling', progress: 100 });
+  await execute('INSERT INTO activity (event,type,activity_timestamp) VALUES ($1,$2,$3)',
+    [`Real K8s rollout: ${deployment.service} ${deployment.version} → ${env}`, 'deploy', Date.now()]);
+  broadcast('activity:new', { event: `${deployment.service} ${deployment.version} rolled out in ${env}`, type: 'deploy', timestamp: Date.now() });
+}
+
 // Begin a deploy to env. If env is gated, creates an approval gate and parks
 // the deploy in 'pending-approval' until decided. Otherwise advances immediately.
 export async function beginDeploy(deployment, env, { actor } = {}) {
@@ -101,9 +143,20 @@ export async function beginDeploy(deployment, env, { actor } = {}) {
     return { gated: true, gateId };
   }
 
+  // Real K8s rolling deploy when the target is wired and the strategy is rolling.
+  // Canary / blue-green still use the simulated phase machine until they're
+  // wired to Argo Rollouts / Flagger.
+  if (strategy === 'rolling') {
+    const k8s = await resolveK8sTarget(deployment.service);
+    if (k8s?.connector_id && k8s?.deployment && k8s?.container && k8s?.image_repo) {
+      realRollingDeploy(deployment, env, k8s).catch(err => console.error('Real rolling deploy:', err));
+      return { gated: false, mode: 'k8s' };
+    }
+  }
+
   await setPhase(deployment.id, env, { status: 'running', phase: 'provisioning', strategy, progress: 5 });
   advancePhase(deployment.id, env, strategy, 1).catch(err => console.error('Strategy start error:', err));
-  return { gated: false };
+  return { gated: false, mode: 'simulated' };
 }
 
 // Called by gates router when an approval is decided. Resumes any deployment
@@ -117,8 +170,17 @@ export async function onGateDecision(gateId, decision) {
   if (!waitingEnv) return;
 
   if (decision === 'approved') {
+    const strategy = dep.strategy || 'rolling';
+    if (strategy === 'rolling') {
+      const k8s = await resolveK8sTarget(dep.service);
+      if (k8s?.connector_id && k8s?.deployment && k8s?.container && k8s?.image_repo) {
+        realRollingDeploy(dep, waitingEnv, k8s).catch(err => console.error('Resume real deploy:', err));
+        await execute('UPDATE deployments SET gate_id=NULL WHERE id=$1', [dep.id]);
+        return;
+      }
+    }
     await setPhase(dep.id, waitingEnv, { status: 'running', phase: 'provisioning', progress: 5 });
-    advancePhase(dep.id, waitingEnv, dep.strategy || 'rolling', 1).catch(err => console.error('Resume error:', err));
+    advancePhase(dep.id, waitingEnv, strategy, 1).catch(err => console.error('Resume error:', err));
     await execute('INSERT INTO activity (event,type,activity_timestamp) VALUES ($1,$2,$3)',
       [`Deployment ${dep.id} approved for ${waitingEnv}`, 'deploy', Date.now()]);
   } else {
@@ -129,11 +191,21 @@ export async function onGateDecision(gateId, decision) {
   await execute('UPDATE deployments SET gate_id=NULL WHERE id=$1', [dep.id]);
 }
 
-// Operator-initiated rollback. Cancels any in-flight progression.
+// Operator-initiated rollback. Cancels any in-flight progression and, when
+// the service has a real K8s target, runs `kubectl rollout undo`.
 export async function rollback(deployment, env, { actor } = {}) {
   const key = `${deployment.id}:${env}`;
   clearInFlight(key);
-  await setPhase(deployment.id, env, { status: 'rolledback', phase: 'rolledback', progress: 0 });
+
+  const k8s = await resolveK8sTarget(deployment.service);
+  if (k8s?.connector_id && k8s?.deployment) {
+    await setPhase(deployment.id, env, { status: 'running', phase: 'rolling-back', progress: 50 });
+    const r = await kubectlRolloutUndo(k8s.connector_id, k8s.deployment, { runId: `${deployment.id}:${env}:rb` });
+    const status = r.exitCode === 0 ? 'rolledback' : 'failed';
+    await setPhase(deployment.id, env, { status, phase: status === 'rolledback' ? 'rolledback' : 'rollback-failed', progress: 0 });
+  } else {
+    await setPhase(deployment.id, env, { status: 'rolledback', phase: 'rolledback', progress: 0 });
+  }
   await execute('INSERT INTO activity (event,type,activity_timestamp) VALUES ($1,$2,$3)',
     [`Rolled back ${deployment.service} in ${env} by ${actor || 'operator'}`, 'deploy', Date.now()]);
   broadcast('activity:new', { event: `Rolled back ${deployment.service} in ${env}`, type: 'deploy', timestamp: Date.now() });

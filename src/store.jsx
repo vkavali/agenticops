@@ -96,6 +96,7 @@ export function AppProvider({ children, me = null }) {
   const [securityScans, setSecurityScans] = useState([]);
   const [gitopsApps, setGitopsApps] = useState([]);
   const [dbMigrations, setDbMigrations] = useState([]);
+  const [cloudConnectors, setCloudConnectors] = useState([]);
 
   // ── Hydrate from API on mount ──
   useEffect(() => {
@@ -105,7 +106,7 @@ export function AppProvider({ children, me = null }) {
           envData, intData, secData, teamData, whData, polData, securityData, alertData, keyData, genData,
           gatesData, tplData, artData, sloData, flagData,
           costAnomalyData, costRecData, chaosExpData, catalogData,
-          scanData, gitopsAppData, migrationData,
+          scanData, gitopsAppData, migrationData, cloudData,
         ] = await Promise.all([
           api.services.list(),
           api.pipelines.list(),
@@ -137,6 +138,7 @@ export function AppProvider({ children, me = null }) {
           api.security.listScans({ limit: 50 }).catch(() => []),
           api.gitops.listApps().catch(() => []),
           api.dbops.listMigrations().catch(() => []),
+          api.cloud.list().catch(() => []),
         ]);
         setServices(svc);
         setPipelines(pips);
@@ -168,6 +170,7 @@ export function AppProvider({ children, me = null }) {
         setSecurityScans(scanData);
         setGitopsApps(gitopsAppData);
         setDbMigrations(migrationData);
+        setCloudConnectors(cloudData);
       } catch (err) {
         console.error('Failed to hydrate from API:', err);
       }
@@ -522,6 +525,7 @@ export function AppProvider({ children, me = null }) {
     securityScans, setSecurityScans,
     gitopsApps, setGitopsApps,
     dbMigrations, setDbMigrations,
+    cloudConnectors, setCloudConnectors,
     toasts,
     activeIncidentCount, healthScore, securityScore, deploysToday, pipelineStats,
     toast, dismissToast, addActivity,

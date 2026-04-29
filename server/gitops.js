@@ -6,6 +6,7 @@ import crypto from 'crypto';
 import { query, queryOne, execute } from './db.js';
 import { broadcast } from './sse.js';
 import { decrypt } from './crypto.js';
+import { kubectlApply } from './k8s.js';
 
 // GitOps sync loop.
 //
@@ -76,16 +77,30 @@ async function syncApp(app) {
     const drift = app.last_sync_revision && app.last_sync_revision !== treeHash;
 
     let status = drift ? 'drift-detected' : 'in-sync';
+    let applyChanges = [];
     if (app.auto_sync && drift) {
-      // Stub: in production, run `kubectl apply -k` or `helm upgrade --install`
-      // here against app.target_cluster using a kubeconfig or service-account.
-      broadcast('gitops:sync-applied', { app_id: app.id, sync_id: syncId, sha, target_cluster: app.target_cluster });
-      status = 'synced';
+      if (app.cluster_connector_id) {
+        // Real apply against the linked K8s connector.
+        const result = await kubectlApply(app.cluster_connector_id, manifestDir, { runId: syncId });
+        if (result.exitCode === 0) {
+          status = 'synced';
+          applyChanges = result.logs.filter(l => /(created|configured|unchanged|deleted)$/.test(l));
+          broadcast('gitops:sync-applied', { app_id: app.id, sync_id: syncId, sha, applied: applyChanges.length });
+        } else {
+          status = 'failed';
+          broadcast('gitops:sync-applied', { app_id: app.id, sync_id: syncId, sha, error: 'kubectl apply failed' });
+        }
+      } else {
+        // No cluster connector — emit the event and let an external operator
+        // wire in a real apply. Useful for demos without a cluster.
+        broadcast('gitops:sync-applied', { app_id: app.id, sync_id: syncId, sha, target_cluster: app.target_cluster, simulated: true });
+        status = 'synced';
+      }
     }
 
     await execute(
-      `UPDATE gitops_syncs SET status=$1, drift_detected=$2, revision=$3, finished_at=$4 WHERE id=$5`,
-      [status, drift, treeHash, Date.now(), syncId]
+      `UPDATE gitops_syncs SET status=$1, drift_detected=$2, revision=$3, changes=$4, finished_at=$5 WHERE id=$6`,
+      [status, drift, treeHash, JSON.stringify(applyChanges.slice(0, 50)), Date.now(), syncId]
     );
     await execute(
       `UPDATE gitops_apps SET last_sync_at=$1, last_sync_status=$2, last_sync_revision=$3 WHERE id=$4`,

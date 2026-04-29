@@ -393,6 +393,10 @@ CREATE TABLE IF NOT EXISTS db_migrations (
   created_by TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_db_migrations_status ON db_migrations(status, created_at DESC);
+
+-- Phase 4: real K8s integration
+ALTER TABLE gitops_apps ADD COLUMN IF NOT EXISTS cluster_connector_id TEXT;
+ALTER TABLE services ADD COLUMN IF NOT EXISTS deploy_target JSONB;
 `;
 
 export async function initDb() {

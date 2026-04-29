@@ -173,6 +173,39 @@ visual language as the existing views (border-2 black, mono accents):
 Shared primitives in `src/components/views.jsx`: PageHeader, Badge,
 Grade (A-F), MetricCard, EmptyState, fmtUSD/fmtPct/fmtAgo.
 
+## Phase 4 — Real K8s integration ✅ (rolling + GitOps apply)
+
+- [x] **kubectl wrapper** (`server/k8s.js`): runs against any
+      `cloud_connectors` row with `provider='kubernetes'`. Kubeconfig
+      lives in the encrypted credentials envelope, gets written to a
+      temp file scoped to the call (`mode 0o600`), `KUBECONFIG` set,
+      kubectl spawned, output streamed via `k8s:log` SSE, temp dir
+      cleaned. Helpers: apply (kustomize), set image, rollout status,
+      rollout undo, version.
+- [x] **Real GitOps apply**: `gitops_apps.cluster_connector_id` links
+      an app to a K8s cluster. When auto-sync triggers and a connector
+      is wired, the sweep runs `kubectl apply -k` against the manifest
+      directory, captures the `created/configured/unchanged/deleted`
+      lines into `gitops_syncs.changes`, and emits `gitops:sync-applied`
+      with the count. No connector → falls back to drift-event-only
+      mode (still useful for demos without a cluster).
+- [x] **Real rolling deploy**: when `services.deploy_target.k8s` is
+      set (`{connector_id, deployment, container, image_repo}`), the
+      strategy engine swaps its simulated phase machine for
+      `kubectl set image` → `kubectl rollout status`. On failure, an
+      automatic `kubectl rollout undo` keeps the cluster healthy.
+      Rollback button uses the same primitive.
+- [x] **Test suite (Vitest)**: 30 tests covering crypto round-trip,
+      AES-GCM tamper detection, AES key validation, SQL safety
+      analyzer (8 hazard rules + clean migration baseline), flag bucket
+      stability + uniformity, condition operators, all-vs-any matching.
+      `npm test` runs in ~300ms.
+- [ ] **Follow-on**: real canary/blue-green via Argo Rollouts or
+      Flagger (current canary phases are still simulated).
+- [ ] **Follow-on**: real chaos provider (Chaos Mesh).
+- [ ] **Follow-on**: Playwright e2e covering incident → agent → PR →
+      merge → apply against a kind cluster.
+
 ## Cross-cutting work
 
 - [ ] Replace ad-hoc `ALTER TABLE … ADD COLUMN` in `db.js` with a real

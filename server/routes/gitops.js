@@ -27,15 +27,15 @@ router.get('/apps/:id', async (req, res) => {
 });
 
 router.post('/apps', operator, async (req, res) => {
-  const { name, repo_full_name, manifest_path, target_cluster, sync_interval_ms, auto_sync } = req.body || {};
+  const { name, repo_full_name, manifest_path, target_cluster, cluster_connector_id, sync_interval_ms, auto_sync } = req.body || {};
   if (!name || !repo_full_name) return res.status(400).json({ error: 'name and repo_full_name required' });
   const id = `app-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
   await execute(
     `INSERT INTO gitops_apps (id, name, repo_full_name, manifest_path, target_cluster,
-       sync_interval_ms, auto_sync, created_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+       cluster_connector_id, sync_interval_ms, auto_sync, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
     [id, name, repo_full_name, manifest_path || '.', target_cluster || null,
-     sync_interval_ms || 300000, auto_sync !== false, Date.now()]
+     cluster_connector_id || null, sync_interval_ms || 300000, auto_sync !== false, Date.now()]
   );
   const row = await queryOne('SELECT * FROM gitops_apps WHERE id=$1', [id]);
   broadcast('gitops:app-created', row);
@@ -43,16 +43,17 @@ router.post('/apps', operator, async (req, res) => {
 });
 
 router.put('/apps/:id', operator, async (req, res) => {
-  const { name, manifest_path, target_cluster, sync_interval_ms, auto_sync } = req.body || {};
+  const { name, manifest_path, target_cluster, cluster_connector_id, sync_interval_ms, auto_sync } = req.body || {};
   await execute(
     `UPDATE gitops_apps SET
        name=COALESCE($1,name),
        manifest_path=COALESCE($2,manifest_path),
        target_cluster=COALESCE($3,target_cluster),
-       sync_interval_ms=COALESCE($4,sync_interval_ms),
-       auto_sync=COALESCE($5,auto_sync)
-     WHERE id=$6`,
-    [name, manifest_path, target_cluster, sync_interval_ms, auto_sync, req.params.id]
+       cluster_connector_id=COALESCE($4,cluster_connector_id),
+       sync_interval_ms=COALESCE($5,sync_interval_ms),
+       auto_sync=COALESCE($6,auto_sync)
+     WHERE id=$7`,
+    [name, manifest_path, target_cluster, cluster_connector_id, sync_interval_ms, auto_sync, req.params.id]
   );
   const row = await queryOne('SELECT * FROM gitops_apps WHERE id=$1', [req.params.id]);
   if (!row) return res.status(404).json({ error: 'Not found' });

@@ -5,9 +5,10 @@ import { useApp } from './store';
 import { PageHeader, Badge, MetricCard, EmptyState, fmtAgo } from './components/views';
 
 export default function GitOpsView() {
-  const { gitopsApps, setGitopsApps, toast } = useApp();
+  const { gitopsApps, setGitopsApps, cloudConnectors, toast } = useApp();
   const [showCreate, setShowCreate] = useState(false);
-  const [draft, setDraft] = useState({ name: '', repo_full_name: '', manifest_path: '.', target_cluster: '', auto_sync: true });
+  const [draft, setDraft] = useState({ name: '', repo_full_name: '', manifest_path: '.', target_cluster: '', cluster_connector_id: '', auto_sync: true });
+  const k8sConnectors = (cloudConnectors || []).filter(c => c.provider === 'kubernetes');
   const [selected, setSelected] = useState(null);
   const [appDetail, setAppDetail] = useState(null);
 
@@ -121,7 +122,13 @@ export default function GitOpsView() {
               <Field label="Name"><input value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} className="w-full px-2 py-1 border border-gray-300 text-xs" /></Field>
               <Field label="Repo (owner/repo)"><input value={draft.repo_full_name} onChange={e => setDraft({ ...draft, repo_full_name: e.target.value })} className="w-full px-2 py-1 border border-gray-300 text-xs font-mono" /></Field>
               <Field label="Manifest path"><input value={draft.manifest_path} onChange={e => setDraft({ ...draft, manifest_path: e.target.value })} className="w-full px-2 py-1 border border-gray-300 text-xs font-mono" /></Field>
-              <Field label="Target cluster"><input value={draft.target_cluster} onChange={e => setDraft({ ...draft, target_cluster: e.target.value })} className="w-full px-2 py-1 border border-gray-300 text-xs" /></Field>
+              <Field label="Target cluster (label)"><input value={draft.target_cluster} onChange={e => setDraft({ ...draft, target_cluster: e.target.value })} className="w-full px-2 py-1 border border-gray-300 text-xs" /></Field>
+              <Field label="K8s connector (real kubectl apply)">
+                <select value={draft.cluster_connector_id} onChange={e => setDraft({ ...draft, cluster_connector_id: e.target.value })} className="w-full px-2 py-1 border border-gray-300 text-xs">
+                  <option value="">— none (drift events only, no real apply) —</option>
+                  {k8sConnectors.map(c => <option key={c.id} value={c.id}>{c.name} ({c.region || 'no region'})</option>)}
+                </select>
+              </Field>
               <label className="flex items-center text-xs">
                 <input type="checkbox" checked={draft.auto_sync} onChange={e => setDraft({ ...draft, auto_sync: e.target.checked })} className="mr-2" />
                 Auto-sync on drift

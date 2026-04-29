@@ -22,11 +22,11 @@ const ROLLOUT_TICK_MS = 30_000;
 const AUTO_PAUSE_BURN_RATE = 1.5;
 const AUTO_ROLLBACK_BURN_RATE = 2.0;
 
-function hashBucket(input) {
+export function hashBucket(input) {
   return parseInt(crypto.createHash('sha1').update(input).digest('hex').slice(0, 8), 16) % 100;
 }
 
-function matchCondition(cond, context) {
+export function matchCondition(cond, context) {
   const lhs = context[cond.attr];
   const rhs = cond.value;
   switch (cond.op) {
@@ -44,7 +44,7 @@ function matchCondition(cond, context) {
   }
 }
 
-function matchAll(conditions, context) {
+export function matchAll(conditions, context) {
   if (!Array.isArray(conditions) || conditions.length === 0) return true;
   return conditions.every(c => matchCondition(c, context));
 }
