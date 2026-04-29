@@ -240,6 +240,159 @@ CREATE TABLE IF NOT EXISTS flag_rollouts (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_flag_rollouts_active
   ON flag_rollouts(flag_id) WHERE status IN ('running','paused');
+
+-- Phase 3: Cloud Cost Management
+CREATE TABLE IF NOT EXISTS cost_data (
+  id BIGSERIAL PRIMARY KEY,
+  cloud_connector_id TEXT,
+  provider TEXT NOT NULL,
+  account TEXT,
+  service TEXT,
+  resource TEXT,
+  daily_cost NUMERIC(12,4) NOT NULL,
+  currency TEXT DEFAULT 'USD',
+  captured_at BIGINT NOT NULL,
+  date_key DATE NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cost_data_date ON cost_data(date_key DESC);
+CREATE INDEX IF NOT EXISTS idx_cost_data_service ON cost_data(provider, service, date_key DESC);
+CREATE TABLE IF NOT EXISTS cost_anomalies (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  service TEXT NOT NULL,
+  resource TEXT,
+  observed_cost NUMERIC(12,4) NOT NULL,
+  baseline_cost NUMERIC(12,4) NOT NULL,
+  delta_pct NUMERIC(7,2) NOT NULL,
+  detected_at BIGINT NOT NULL,
+  status TEXT DEFAULT 'open'
+);
+CREATE TABLE IF NOT EXISTS cost_recommendations (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  resource TEXT NOT NULL,
+  estimated_monthly_savings NUMERIC(12,2) NOT NULL,
+  rationale TEXT,
+  status TEXT DEFAULT 'open',
+  created_at BIGINT NOT NULL
+);
+
+-- Phase 3: Chaos Engineering
+CREATE TABLE IF NOT EXISTS chaos_experiments (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  target_service TEXT NOT NULL,
+  fault_type TEXT NOT NULL CHECK (fault_type IN ('latency','error-rate','pod-kill','cpu-stress','network-loss')),
+  fault_config JSONB NOT NULL DEFAULT '{}'::jsonb,
+  blast_radius_pct NUMERIC(5,2) NOT NULL DEFAULT 10,
+  duration_ms BIGINT NOT NULL DEFAULT 60000,
+  hypothesis TEXT,
+  abort_on_slo_id TEXT REFERENCES slos(id) ON DELETE SET NULL,
+  created_at BIGINT NOT NULL,
+  created_by TEXT
+);
+CREATE TABLE IF NOT EXISTS chaos_runs (
+  id TEXT PRIMARY KEY,
+  experiment_id TEXT NOT NULL REFERENCES chaos_experiments(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending','running','aborted','completed','failed')),
+  gate_id TEXT,
+  triggered_by TEXT,
+  started_at BIGINT NOT NULL,
+  finished_at BIGINT,
+  abort_reason TEXT,
+  observations JSONB DEFAULT '[]'::jsonb
+);
+CREATE INDEX IF NOT EXISTS idx_chaos_runs_exp ON chaos_runs(experiment_id, started_at DESC);
+
+-- Phase 3: IDP / Service Catalog scorecards
+ALTER TABLE services ADD COLUMN IF NOT EXISTS owner TEXT;
+ALTER TABLE services ADD COLUMN IF NOT EXISTS tier TEXT;
+ALTER TABLE services ADD COLUMN IF NOT EXISTS repo_full_name TEXT;
+ALTER TABLE services ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
+CREATE TABLE IF NOT EXISTS scorecards (
+  id BIGSERIAL PRIMARY KEY,
+  service_id TEXT NOT NULL,
+  metric TEXT NOT NULL,
+  value NUMERIC(7,3),
+  grade TEXT,
+  detail JSONB,
+  computed_at BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scorecards_service ON scorecards(service_id, computed_at DESC);
+
+-- Phase 3: Security Testing (STO)
+CREATE TABLE IF NOT EXISTS security_scans (
+  id TEXT PRIMARY KEY,
+  scan_type TEXT NOT NULL CHECK (scan_type IN ('sast','dast','sca','secrets','iac')),
+  target TEXT NOT NULL,
+  pipeline_run_id TEXT,
+  status TEXT NOT NULL DEFAULT 'running'
+    CHECK (status IN ('running','passed','failed','warning')),
+  findings_critical INTEGER DEFAULT 0,
+  findings_high INTEGER DEFAULT 0,
+  findings_medium INTEGER DEFAULT 0,
+  findings_low INTEGER DEFAULT 0,
+  started_at BIGINT NOT NULL,
+  finished_at BIGINT
+);
+CREATE TABLE IF NOT EXISTS security_findings (
+  id TEXT PRIMARY KEY,
+  scan_id TEXT NOT NULL REFERENCES security_scans(id) ON DELETE CASCADE,
+  severity TEXT NOT NULL CHECK (severity IN ('critical','high','medium','low')),
+  rule_id TEXT,
+  title TEXT NOT NULL,
+  description TEXT,
+  file_path TEXT,
+  line INTEGER,
+  cve TEXT,
+  status TEXT DEFAULT 'open'
+);
+CREATE INDEX IF NOT EXISTS idx_findings_scan ON security_findings(scan_id, severity);
+
+-- Phase 3: GitOps app sync
+CREATE TABLE IF NOT EXISTS gitops_apps (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  repo_full_name TEXT NOT NULL,
+  manifest_path TEXT NOT NULL DEFAULT '.',
+  target_cluster TEXT,
+  sync_interval_ms BIGINT DEFAULT 300000,
+  last_sync_at BIGINT,
+  last_sync_status TEXT,
+  last_sync_revision TEXT,
+  auto_sync BOOLEAN DEFAULT true,
+  created_at BIGINT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS gitops_syncs (
+  id TEXT PRIMARY KEY,
+  app_id TEXT NOT NULL REFERENCES gitops_apps(id) ON DELETE CASCADE,
+  revision TEXT,
+  status TEXT NOT NULL,
+  drift_detected BOOLEAN DEFAULT false,
+  changes JSONB DEFAULT '[]'::jsonb,
+  started_at BIGINT NOT NULL,
+  finished_at BIGINT
+);
+
+-- Phase 3: Database DevOps
+CREATE TABLE IF NOT EXISTS db_migrations (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  version TEXT NOT NULL,
+  database_name TEXT,
+  sql_text TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending','approved','applied','failed','rolled-back')),
+  safety_score INTEGER,
+  safety_warnings JSONB DEFAULT '[]'::jsonb,
+  gate_id TEXT,
+  pipeline_run_id TEXT,
+  created_at BIGINT NOT NULL,
+  applied_at BIGINT,
+  created_by TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_db_migrations_status ON db_migrations(status, created_at DESC);
 `;
 
 export async function initDb() {

@@ -34,6 +34,10 @@ import slosRouter from './routes/slos.js';
 import { startSloEvaluator } from './slo.js';
 import flagsRouter from './routes/flags.js';
 import { startRolloutController } from './flags.js';
+import costRouter from './routes/cost.js';
+import { startCostSweep, seedSyntheticCosts } from './cost.js';
+import chaosRouter from './routes/chaos.js';
+import { onGateDecision as chaosOnGate } from './chaos.js';
 
 dotenv.config();
 
@@ -97,6 +101,8 @@ app.use('/api/artifacts', artifactsRouter);
 app.use('/api/iac', iacRouter);
 app.use('/api/slos', slosRouter);
 app.use('/api/flags', flagsRouter);
+app.use('/api/cost', costRouter);
+app.use('/api/chaos', chaosRouter);
 
 // SSE endpoint (auth handled inside addClient)
 app.get('/api/events', (req, res) => { addClient(req, res); });
@@ -125,11 +131,14 @@ async function start() {
     await seed();
     onGateDecided(strategyOnGate);
     onGateDecided(iacOnGate);
+    onGateDecided(chaosOnGate);
+    await seedSyntheticCosts();
     startSimulation();
     startMonitoring();
     startDriftSweep();
     startSloEvaluator();
     startRolloutController();
+    startCostSweep();
     app.listen(PORT, '0.0.0.0', () => {
       console.log(`✓ AgenticOps API running on port ${PORT}`);
     });
