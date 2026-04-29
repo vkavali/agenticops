@@ -2,6 +2,7 @@ import { execute, queryOne } from './db.js';
 import { broadcast } from './sse.js';
 import { createGate } from './routes/gates.js';
 import { kubectlSetImage, kubectlRolloutStatus, kubectlRolloutUndo } from './k8s.js';
+import { rolloutSetImage, observeRollout, rolloutPromote, rolloutAbort } from './argo.js';
 
 // Deployment strategy engine.
 // Drives phase progression for rolling / canary / blue-green deploys against a
@@ -117,6 +118,66 @@ async function realRollingDeploy(deployment, env, k8s) {
   broadcast('activity:new', { event: `${deployment.service} ${deployment.version} rolled out in ${env}`, type: 'deploy', timestamp: Date.now() });
 }
 
+// Real canary / blue-green via Argo Rollouts. Patches the image, observes
+// status, bridges to our phase machine. When Argo pauses awaiting promotion,
+// we open an approval gate; on approval we annotate the rollout to promote.
+async function realArgoDeploy(deployment, env, k8s, strategy) {
+  const image = `${k8s.image_repo}:${deployment.version}`;
+  const runId = `${deployment.id}:${env}`;
+
+  await setPhase(deployment.id, env, { status: 'running', phase: 'argo-set-image', strategy, progress: 10 });
+  const setRes = await rolloutSetImage(k8s.connector_id, k8s.argo_rollout, k8s.container, image);
+  if (setRes.exitCode !== 0) {
+    await setPhase(deployment.id, env, { status: 'failed', phase: 'argo-set-image-failed', progress: 0 });
+    return;
+  }
+
+  let openGateId = null;
+  const final = await observeRollout(k8s.connector_id, k8s.argo_rollout, {
+    runId, intervalMs: 5000, timeoutMs: 60 * 60 * 1000,
+    onPhase: async (s) => {
+      // Map Argo's progress into our progress field. Canary uses the weight;
+      // blue-green has no weight so we step on phase changes.
+      const progress = s.weight != null
+        ? Math.max(10, Math.min(95, Number(s.weight)))
+        : (s.phase === 'Progressing' ? 50 : s.phase === 'Healthy' ? 100 : 0);
+      await setPhase(deployment.id, env, {
+        status: 'running',
+        phase: `argo-${s.phase.toLowerCase()}`,
+        strategy,
+        progress,
+        argo: { weight: s.weight, currentStep: s.currentStep, totalSteps: s.totalSteps },
+      });
+
+      // Argo pauses when a step has no `duration` (= awaiting manual promote).
+      // Open an approval gate for the operator on first such pause.
+      if (s.phase === 'Paused' && (s.pauseConditions || []).length > 0 && !openGateId) {
+        openGateId = await createGate({
+          subject_type: 'argo_rollout',
+          subject_id: deployment.id,
+          description: `Promote canary step ${s.currentStep}/${s.totalSteps} for ${deployment.service} ${deployment.version} (${s.weight ?? '—'}% traffic)`,
+          required_role: 'operator',
+          requested_by: 'argo-observer',
+          payload: { deployment_id: deployment.id, env, rollout: k8s.argo_rollout, connector_id: k8s.connector_id },
+          ttl_ms: 24 * 60 * 60 * 1000,
+        });
+        await execute('UPDATE deployments SET gate_id=$1 WHERE id=$2', [openGateId, deployment.id]);
+        broadcast('deployment:argo-paused', { runId, gate_id: openGateId, weight: s.weight, currentStep: s.currentStep });
+      }
+    },
+  });
+
+  if (final.phase === 'Healthy') {
+    await setPhase(deployment.id, env, { status: 'passed', phase: 'argo-healthy', strategy, progress: 100 });
+    await execute('INSERT INTO activity (event,type,activity_timestamp) VALUES ($1,$2,$3)',
+      [`Argo ${strategy} complete: ${deployment.service} ${deployment.version} → ${env}`, 'deploy', Date.now()]);
+  } else {
+    await setPhase(deployment.id, env, { status: 'failed', phase: `argo-${(final.phase || 'unknown').toLowerCase()}`, strategy, progress: 0 });
+    await execute('INSERT INTO activity (event,type,activity_timestamp) VALUES ($1,$2,$3)',
+      [`Argo ${strategy} ${final.phase}: ${deployment.service} ${deployment.version} (${final.message || 'no message'})`, 'deploy', Date.now()]);
+  }
+}
+
 // Begin a deploy to env. If env is gated, creates an approval gate and parks
 // the deploy in 'pending-approval' until decided. Otherwise advances immediately.
 export async function beginDeploy(deployment, env, { actor } = {}) {
@@ -143,15 +204,19 @@ export async function beginDeploy(deployment, env, { actor } = {}) {
     return { gated: true, gateId };
   }
 
+  const k8s = await resolveK8sTarget(deployment.service);
+
   // Real K8s rolling deploy when the target is wired and the strategy is rolling.
-  // Canary / blue-green still use the simulated phase machine until they're
-  // wired to Argo Rollouts / Flagger.
-  if (strategy === 'rolling') {
-    const k8s = await resolveK8sTarget(deployment.service);
-    if (k8s?.connector_id && k8s?.deployment && k8s?.container && k8s?.image_repo) {
-      realRollingDeploy(deployment, env, k8s).catch(err => console.error('Real rolling deploy:', err));
-      return { gated: false, mode: 'k8s' };
-    }
+  if (strategy === 'rolling' && k8s?.connector_id && k8s?.deployment && k8s?.container && k8s?.image_repo) {
+    realRollingDeploy(deployment, env, k8s).catch(err => console.error('Real rolling deploy:', err));
+    return { gated: false, mode: 'k8s' };
+  }
+
+  // Real canary / blue-green via Argo Rollouts when the service points at one.
+  if ((strategy === 'canary' || strategy === 'blue-green')
+      && k8s?.connector_id && k8s?.argo_rollout && k8s?.container && k8s?.image_repo) {
+    realArgoDeploy(deployment, env, k8s, strategy).catch(err => console.error('Argo deploy:', err));
+    return { gated: false, mode: 'argo' };
   }
 
   await setPhase(deployment.id, env, { status: 'running', phase: 'provisioning', strategy, progress: 5 });
@@ -160,8 +225,23 @@ export async function beginDeploy(deployment, env, { actor } = {}) {
 }
 
 // Called by gates router when an approval is decided. Resumes any deployment
-// that was waiting on this gate.
+// that was waiting on this gate (env-promote OR Argo canary-step pause).
 export async function onGateDecision(gateId, decision) {
+  // Argo pause-promote gates carry `subject_type='argo_rollout'`.
+  const gate = await queryOne('SELECT subject_type, payload FROM approval_gates WHERE id=$1', [gateId]);
+  if (gate?.subject_type === 'argo_rollout') {
+    const payload = gate.payload || {};
+    if (decision === 'approved') {
+      await rolloutPromote(payload.connector_id, payload.rollout).catch(err => console.error('argo promote:', err));
+      broadcast('deployment:argo-promoted', { deployment_id: payload.deployment_id, rollout: payload.rollout });
+    } else {
+      await rolloutAbort(payload.connector_id, payload.rollout).catch(err => console.error('argo abort:', err));
+      broadcast('deployment:argo-aborted', { deployment_id: payload.deployment_id, rollout: payload.rollout });
+    }
+    await execute('UPDATE deployments SET gate_id=NULL WHERE id=$1', [payload.deployment_id]);
+    return;
+  }
+
   const dep = await queryOne('SELECT * FROM deployments WHERE gate_id=$1', [gateId]);
   if (!dep) return;
   // Find which env was waiting on this gate.

@@ -88,10 +88,18 @@ function batchStages(stages) {
   return batches;
 }
 
-async function runStage(stage, workDir, runId) {
+async function runStage(stage, workDir, runId, pipelineCtx) {
   if (stage.type === 'approval') {
     broadcast('pipeline:stage', { runId, stage: stage.name, status: 'passed' });
     return { name: stage.name, status: 'passed', duration: '0s', logs: ['Auto-approved (no manual gate configured)'] };
+  }
+
+  // Trivy scanner step type — runs Trivy filesystem scan, parses findings,
+  // ingests them as a security_scan with findings_critical/high/medium/low
+  // counts populated. Stage fails if findings_critical > 0 unless
+  // stage.allow_critical is true.
+  if (stage.type === 'trivy') {
+    return runTrivyStage(stage, workDir, runId, pipelineCtx);
   }
 
   const stageStart = Date.now();
@@ -119,6 +127,59 @@ async function runStage(stage, workDir, runId) {
     broadcast('pipeline:log', { runId, stage: stage.name, line: `✓ ${stage.name} completed (${stageDuration})` });
   }
   return { name: stage.name, status: stageStatus, duration: stageDuration, logs: stageLogs };
+}
+
+// Trivy filesystem scan stage. Calls `trivy fs --format json` against the
+// cloned workdir, parses Vulnerabilities by severity, ingests into
+// security_scans + security_findings via the existing module.
+async function runTrivyStage(stage, workDir, runId, pipelineCtx) {
+  const { createScan } = await import('./security.js');
+  const stageStart = Date.now();
+  broadcast('pipeline:stage', { runId, stage: stage.name, status: 'running' });
+  broadcast('pipeline:log', { runId, stage: stage.name, line: '> trivy fs --format json --severity HIGH,CRITICAL .' });
+
+  const args = ['fs', '--format', 'json', '--severity', stage.severity || 'HIGH,CRITICAL', '--quiet', '.'];
+  const r = await runCommand('trivy', args, workDir, runId, stage.name);
+  const stageDuration = `${Math.round((Date.now() - stageStart) / 1000)}s`;
+
+  let findings = [];
+  try {
+    const json = JSON.parse(r.logs.join('\n'));
+    for (const result of (json.Results || [])) {
+      for (const v of (result.Vulnerabilities || [])) {
+        findings.push({
+          severity: (v.Severity || 'low').toLowerCase(),
+          rule_id: v.VulnerabilityID,
+          title: v.Title || v.VulnerabilityID,
+          description: v.Description || null,
+          file_path: result.Target || null,
+          cve: v.VulnerabilityID,
+        });
+      }
+    }
+  } catch {
+    // Trivy returned non-JSON (likely an error before scanning) — propagate as a stage failure.
+    broadcast('pipeline:log', { runId, stage: stage.name, line: '[stderr] trivy output was not JSON; treating stage as failed' });
+    broadcast('pipeline:stage', { runId, stage: stage.name, status: 'failed', duration: stageDuration });
+    return { name: stage.name, status: 'failed', duration: stageDuration, logs: r.logs };
+  }
+
+  const scanResult = await createScan({
+    scanType: 'sca',
+    target: pipelineCtx?.repo || 'unknown',
+    pipelineRunId: runId,
+    findings,
+  });
+
+  const blocking = (scanResult.counts.critical > 0) && !stage.allow_critical;
+  const stageStatus = blocking ? 'failed' : (scanResult.counts.high > 0 ? 'passed' : 'passed');
+  broadcast('pipeline:log', { runId, stage: stage.name,
+    line: `✓ trivy: ${scanResult.counts.critical}c/${scanResult.counts.high}h/${scanResult.counts.medium}m/${scanResult.counts.low}l (scan ${scanResult.id})` });
+  broadcast('pipeline:stage', { runId, stage: stage.name, status: stageStatus, duration: stageDuration });
+  return {
+    name: stage.name, status: stageStatus, duration: stageDuration,
+    logs: [`trivy summary: ${JSON.stringify(scanResult.counts)}`, `scan_id: ${scanResult.id}`],
+  };
 }
 
 // Pipeline-level timeout: parsed from `pipeline.timeout` (e.g. "30m", "2h").
@@ -169,6 +230,7 @@ async function runPipeline(pipeline, run, token, branch) {
     broadcast('pipeline:log', { runId: run.id, stage: 'clone', line: '✓ Repository cloned' });
 
     // Execute batches sequentially; stages within a batch run concurrently.
+    const ctx = { repo: pipeline.repo_full_name, branch };
     for (const batch of batchStages(stages)) {
       if (timedOut) break;
       if (failed) {
@@ -180,12 +242,12 @@ async function runPipeline(pipeline, run, token, branch) {
       }
 
       if (batch.length === 1) {
-        const result = await runStage(batch[0], workDir, run.id);
+        const result = await runStage(batch[0], workDir, run.id, ctx);
         stageResults.push(result);
         if (result.status === 'failed') failed = true;
       } else {
         broadcast('pipeline:log', { runId: run.id, stage: 'parallel', line: `> Running ${batch.length} stages in parallel: ${batch.map(s => s.name).join(', ')}` });
-        const results = await Promise.all(batch.map(s => runStage(s, workDir, run.id)));
+        const results = await Promise.all(batch.map(s => runStage(s, workDir, run.id, ctx)));
         stageResults.push(...results);
         if (results.some(r => r.status === 'failed')) failed = true;
       }

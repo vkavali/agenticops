@@ -200,8 +200,23 @@ Grade (A-F), MetricCard, EmptyState, fmtUSD/fmtPct/fmtAgo.
       analyzer (8 hazard rules + clean migration baseline), flag bucket
       stability + uniformity, condition operators, all-vs-any matching.
       `npm test` runs in ~300ms.
-- [ ] **Follow-on**: real canary/blue-green via Argo Rollouts or
-      Flagger (current canary phases are still simulated).
+- [x] **Real canary + blue-green via Argo Rollouts** (`server/argo.js`):
+      `kubectl patch rollout` to bump the image, `kubectl get rollout
+      -o json` polled every 5s, status distilled to `{strategy, phase,
+      currentStep, totalSteps, weight, activeSelector, pauseConditions}`
+      and broadcast as `deployment:argo-status`. When the rollout
+      pauses awaiting promotion, an approval gate is auto-opened
+      (`subject_type='argo_rollout'`); on approval the gate listener
+      annotates the rollout to promote. On Healthy → deployment passes;
+      on Degraded → fails. Operator-facing `/api/deployments/:id/argo/
+      promote` + `/abort` + `/status` endpoints for manual control.
+- [x] **Trivy pipeline step type**: `stage.type='trivy'` runs
+      `trivy fs --format json` in the pipeline workdir, parses
+      Vulnerabilities by severity, ingests as a `security_scan` with
+      `findings_critical/high/medium/low` populated and individual
+      findings rows. Stage fails on critical findings unless
+      `stage.allow_critical` is set — that's the deployment gate from
+      pipelines.
 - [ ] **Follow-on**: real chaos provider (Chaos Mesh).
 - [ ] **Follow-on**: Playwright e2e covering incident → agent → PR →
       merge → apply against a kind cluster.

@@ -3,6 +3,7 @@ import { query, execute, queryOne } from '../db.js';
 import { broadcast } from '../sse.js';
 import { requireAuth } from '../auth.js';
 import { beginDeploy, rollback as strategyRollback } from '../strategy.js';
+import { rolloutPromote, rolloutAbort, rolloutGet, parseRolloutStatus } from '../argo.js';
 
 const router = Router();
 const operator = requireAuth('operator');
@@ -61,6 +62,41 @@ router.post('/:id/rollback/:env', operator, async (req, res) => {
   if (!dep) return res.status(404).json({ error: 'Deployment not found' });
   await strategyRollback(dep, env, { actor: req.auth?.label });
   res.json({ ok: true });
+});
+
+// Argo Rollouts — operator-driven promote/abort (independent of gates).
+async function getArgoTarget(serviceName) {
+  const svc = await queryOne('SELECT deploy_target FROM services WHERE name=$1 LIMIT 1', [serviceName]);
+  const k8s = svc?.deploy_target?.k8s;
+  if (!k8s?.connector_id || !k8s?.argo_rollout) return null;
+  return k8s;
+}
+
+router.post('/:id/argo/promote', operator, async (req, res) => {
+  const dep = await queryOne('SELECT * FROM deployments WHERE id=$1', [req.params.id]);
+  if (!dep) return res.status(404).json({ error: 'Deployment not found' });
+  const k8s = await getArgoTarget(dep.service);
+  if (!k8s) return res.status(400).json({ error: 'Service has no Argo Rollouts target' });
+  const r = await rolloutPromote(k8s.connector_id, k8s.argo_rollout, !!req.body?.full);
+  res.json({ ok: r.exitCode === 0, stderr: r.exitCode === 0 ? null : r.stderr });
+});
+
+router.post('/:id/argo/abort', operator, async (req, res) => {
+  const dep = await queryOne('SELECT * FROM deployments WHERE id=$1', [req.params.id]);
+  if (!dep) return res.status(404).json({ error: 'Deployment not found' });
+  const k8s = await getArgoTarget(dep.service);
+  if (!k8s) return res.status(400).json({ error: 'Service has no Argo Rollouts target' });
+  const r = await rolloutAbort(k8s.connector_id, k8s.argo_rollout);
+  res.json({ ok: r.exitCode === 0, stderr: r.exitCode === 0 ? null : r.stderr });
+});
+
+router.get('/:id/argo/status', async (req, res) => {
+  const dep = await queryOne('SELECT * FROM deployments WHERE id=$1', [req.params.id]);
+  if (!dep) return res.status(404).json({ error: 'Deployment not found' });
+  const k8s = await getArgoTarget(dep.service);
+  if (!k8s) return res.json(null);
+  const payload = await rolloutGet(k8s.connector_id, k8s.argo_rollout);
+  res.json(parseRolloutStatus(payload));
 });
 
 export default router;

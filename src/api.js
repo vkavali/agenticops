@@ -54,6 +54,9 @@ const api = {
     create: (data) => request('POST', '/api/deployments', data),
     promote: (id, env) => request('POST', `/api/deployments/${id}/promote/${env}`),
     rollback: (id, env) => request('POST', `/api/deployments/${id}/rollback/${env}`),
+    argoStatus: (id) => request('GET', `/api/deployments/${id}/argo/status`),
+    argoPromote: (id, full = false) => request('POST', `/api/deployments/${id}/argo/promote`, { full }),
+    argoAbort: (id) => request('POST', `/api/deployments/${id}/argo/abort`),
   },
 
   // Incidents
