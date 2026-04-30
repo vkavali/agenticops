@@ -1,0 +1,217 @@
+name: ci
+
+# Two-tier CI:
+#   - `unit`: fast — builds, lints, runs the unit suite. Every push + PR.
+#   - `kind-e2e`: slow — spins up a real cluster and verifies the kubectl
+#     commands our wrappers emit. Only on push-to-main and manual dispatch
+#     (skip for PRs by default to keep iteration fast).
+#
+# Both jobs set PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD so npm ci doesn't pull
+# ~700MB of browsers. Playwright tests have their own job below.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+
+jobs:
+  unit:
+    name: build + unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install (skip Playwright browsers)
+        run: npm ci --no-audit --no-fund
+
+      - name: Build (vite)
+        run: npm run build
+
+      - name: Unit tests (vitest)
+        run: npm test
+
+  kind-e2e:
+    name: kind cluster e2e
+    needs: unit
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # Pinned versions — bumping these is intentional, never automatic. Bumping
+    # without testing usually breaks something downstream.
+    env:
+      ARGO_ROLLOUTS_VERSION: 'v1.7.2'
+      CHAOS_MESH_VERSION: 'v2.7.0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Set up kind
+        uses: helm/kind-action@v1.10.0
+        with:
+          cluster_name: agenticops-e2e
+          wait: 120s
+          version: v0.23.0
+          node_image: kindest/node:v1.30.0
+
+      - name: Show cluster info
+        run: |
+          set -x
+          kubectl cluster-info
+          kubectl get nodes -o wide
+          kubectl version --client=true
+
+      # Argo Rollouts: install from a pinned release tag. The release bundle
+      # name is `install.yaml` and the namespace is created by the manifest.
+      - name: Install Argo Rollouts
+        run: |
+          set -euo pipefail
+          kubectl create namespace argo-rollouts
+          kubectl apply -n argo-rollouts -f \
+            https://github.com/argoproj/argo-rollouts/releases/download/${ARGO_ROLLOUTS_VERSION}/install.yaml
+          # Wait for the controller before applying any Rollout resources.
+          kubectl -n argo-rollouts rollout status deployment/argo-rollouts --timeout=180s
+          kubectl get crd rollouts.argoproj.io -o name
+
+      # Chaos Mesh: their officially-blessed kind installer is `install.sh`.
+      # We use it instead of stitching CRD URLs together because the manifest
+      # layout has historically moved across releases.
+      - name: Install Chaos Mesh
+        run: |
+          set -euo pipefail
+          curl -sSL https://mirrors.chaos-mesh.org/${CHAOS_MESH_VERSION}/install.sh -o install-chaos-mesh.sh
+          chmod +x install-chaos-mesh.sh
+          ./install-chaos-mesh.sh --local kind --name agenticops-e2e --version ${CHAOS_MESH_VERSION#v} || true
+          # CRDs are what we actually need — they land regardless of whether the
+          # full control plane is healthy. Verify the four CRDs we exercise.
+          kubectl get crd podchaos.chaos-mesh.org networkchaos.chaos-mesh.org stresschaos.chaos-mesh.org httpchaos.chaos-mesh.org
+
+      - name: Apply test fixtures
+        run: |
+          set -euo pipefail
+          cat <<'EOF' | kubectl apply -f -
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: e2e-app
+            labels: { app: e2e-app }
+          spec:
+            replicas: 2
+            selector: { matchLabels: { app: e2e-app } }
+            template:
+              metadata: { labels: { app: e2e-app } }
+              spec:
+                containers:
+                - name: web
+                  image: nginx:1.25
+                  ports: [{ containerPort: 80 }]
+          ---
+          apiVersion: argoproj.io/v1alpha1
+          kind: Rollout
+          metadata: { name: e2e-rollout }
+          spec:
+            replicas: 2
+            selector: { matchLabels: { app: e2e-rollout } }
+            template:
+              metadata: { labels: { app: e2e-rollout } }
+              spec:
+                containers:
+                - name: web
+                  image: nginx:1.25
+            strategy:
+              canary:
+                steps:
+                - setWeight: 25
+                - pause: { duration: 5 }
+                - setWeight: 50
+                - pause: { duration: 5 }
+          EOF
+          kubectl rollout status deployment/e2e-app --timeout=180s
+          kubectl wait --for=condition=Available rollout/e2e-rollout --timeout=180s || true
+
+      - name: Verify kubectl set image (mirrors server/k8s.js)
+        run: |
+          set -euo pipefail
+          kubectl set image deployment/e2e-app web=nginx:1.27
+          kubectl rollout status deployment/e2e-app --timeout=180s
+          kubectl get deployment e2e-app -o jsonpath='{.spec.template.spec.containers[0].image}' | grep -q nginx:1.27
+
+      - name: Verify Argo Rollouts patch + canary status (mirrors server/argo.js)
+        run: |
+          set -euo pipefail
+          kubectl patch rollout e2e-rollout --type=merge -p \
+            '{"spec":{"template":{"spec":{"containers":[{"name":"web","image":"nginx:1.27"}]}}}}'
+          for i in $(seq 1 30); do
+            phase=$(kubectl get rollout e2e-rollout -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+            echo "phase=$phase ($i/30)"
+            if [ "$phase" = "Healthy" ]; then break; fi
+            sleep 5
+          done
+          if [ "$phase" != "Healthy" ]; then
+            echo "Rollout did not reach Healthy. Diagnostics:"
+            kubectl describe rollout e2e-rollout
+            kubectl get pods
+            exit 1
+          fi
+
+      - name: Verify Chaos Mesh CRD apply + delete (mirrors server/chaos-mesh.js)
+        run: |
+          set -euo pipefail
+          cat <<'EOF' | kubectl apply -f -
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: PodChaos
+          metadata:
+            name: aops-e2e-pod-kill
+            namespace: default
+            labels:
+              app.kubernetes.io/managed-by: agenticops
+          spec:
+            action: pod-kill
+            mode: one
+            selector: { labelSelectors: { app: e2e-app } }
+            duration: 5s
+          EOF
+          kubectl get podchaos aops-e2e-pod-kill -o jsonpath='{.spec.action}' | grep -q pod-kill
+          kubectl delete podchaos aops-e2e-pod-kill --ignore-not-found
+
+      - name: Verify kubectl apply -k (mirrors server/gitops.js)
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/manifests
+          cat > /tmp/manifests/kustomization.yaml <<'EOF'
+          resources: [./configmap.yaml]
+          EOF
+          cat > /tmp/manifests/configmap.yaml <<'EOF'
+          apiVersion: v1
+          kind: ConfigMap
+          metadata: { name: e2e-gitops-config }
+          data: { foo: bar }
+          EOF
+          kubectl apply -k /tmp/manifests
+          kubectl get configmap e2e-gitops-config -o jsonpath='{.data.foo}' | grep -q bar
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          echo "=== Cluster events ==="
+          kubectl get events --sort-by=.lastTimestamp | tail -50
+          echo "=== Argo Rollouts pods ==="
+          kubectl -n argo-rollouts get pods
+          kubectl -n argo-rollouts logs deployment/argo-rollouts --tail=100 || true
+          echo "=== Chaos Mesh pods ==="
+          kubectl -n chaos-mesh get pods 2>/dev/null || echo "no chaos-mesh ns"

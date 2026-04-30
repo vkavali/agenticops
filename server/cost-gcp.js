@@ -1,6 +1,16 @@
-import { BigQuery } from '@google-cloud/bigquery';
 import { query, queryOne, execute } from './db.js';
 import { decrypt } from './crypto.js';
+
+// Lazy SDK load — @google-cloud/bigquery has native gRPC bindings that can
+// fail to load on some platforms. Keep the failure scoped to the GCP path
+// instead of crashing the whole server at boot.
+let _BigQuery = null;
+async function getBigQuery() {
+  if (_BigQuery) return _BigQuery;
+  const mod = await import('@google-cloud/bigquery');
+  _BigQuery = mod.BigQuery;
+  return _BigQuery;
+}
 
 // GCP Cost adapter — BigQuery billing-export pattern.
 //
@@ -44,6 +54,10 @@ export async function pollGcpConnector(connector, { lookbackDays = 14 } = {}) {
   if (!creds?.service_account_json || !creds?.dataset || !creds?.table) {
     return { ok: false, error: 'GCP connector missing service_account_json/dataset/table' };
   }
+
+  let BigQuery;
+  try { BigQuery = await getBigQuery(); }
+  catch (err) { return { ok: false, error: `BigQuery SDK unavailable: ${err.message}` }; }
 
   const client = new BigQuery({
     projectId: creds.project_id || creds.service_account_json.project_id,
