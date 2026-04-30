@@ -1,6 +1,7 @@
-import { useState, useMemo } from 'react';
-import { Rocket, CheckCircle2, XCircle, Clock, GitBranch, RotateCcw, ArrowRight, Play, X, AlertTriangle, Shield, Search, Filter } from 'lucide-react';
+import { useEffect, useState, useMemo } from 'react';
+import { Rocket, CheckCircle2, XCircle, Clock, GitBranch, RotateCcw, ArrowRight, Play, Pause, Square, X, AlertTriangle, Shield, Search, Filter, Activity } from 'lucide-react';
 import { useApp, getTimeAgo } from './store';
+import api from './api';
 
 const ENVIRONMENTS = ['development', 'staging', 'production'];
 const SERVICES_LIST = ['api-service', 'frontend', 'worker-service', 'auth-service'];
@@ -206,7 +207,12 @@ export default function DeploymentsView() {
             <div key={dep.id} className="border border-gray-300 bg-white shadow-[1px_1px_0_0_#111827]">
               <div className="flex items-stretch">
                 <div className="w-[200px] shrink-0 p-4 border-r border-gray-200 bg-gray-50">
-                  <div className="text-xs font-bold text-gray-900">{dep.service}</div>
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs font-bold text-gray-900">{dep.service}</div>
+                    {dep.strategy && dep.strategy !== 'rolling' && (
+                      <span className="text-[8px] font-bold uppercase tracking-widest px-1 py-0.5 border border-gray-900 bg-white text-gray-900">{dep.strategy}</span>
+                    )}
+                  </div>
                   <div className="text-[10px] font-mono text-gray-400 mt-0.5 flex items-center"><GitBranch size={9} className="mr-1" />{dep.commit}</div>
                   <div className="text-[10px] text-gray-500 mt-1 truncate">{dep.msg}</div>
                   <div className="text-[9px] font-mono text-gray-400 mt-1.5">by {dep.by}</div>
@@ -245,6 +251,7 @@ export default function DeploymentsView() {
                   );
                 })}
               </div>
+              {(dep.strategy === 'canary' || dep.strategy === 'blue-green') && <ArgoPanel deploymentId={dep.id} />}
             </div>
           ))}
           {filteredDeploys.length === 0 && (
@@ -254,6 +261,105 @@ export default function DeploymentsView() {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// Live Argo Rollouts panel — polls /api/deployments/:id/argo/status every 5s.
+// Renders nothing (returns null) when the deployment isn't Argo-driven, so it's
+// safe to mount unconditionally for any canary/BG row.
+function ArgoPanel({ deploymentId }) {
+  const { toast } = useApp();
+  const [status, setStatus] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer;
+    const poll = async () => {
+      try {
+        const s = await api.deployments.argoStatus(deploymentId);
+        if (!cancelled) setStatus(s);
+      } catch { /* ignore */ }
+      if (!cancelled) timer = setTimeout(poll, 5000);
+    };
+    poll();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  }, [deploymentId]);
+
+  if (!status) return null;
+
+  const phaseColor = {
+    Healthy: 'bg-green-50 text-green-700 border-green-200',
+    Progressing: 'bg-blue-50 text-blue-700 border-blue-200',
+    Paused: 'bg-amber-50 text-amber-700 border-amber-200',
+    Degraded: 'bg-red-50 text-red-700 border-red-200',
+  }[status.phase] || 'bg-gray-100 text-gray-700 border-gray-300';
+
+  const promote = async (full = false) => {
+    setBusy(true);
+    try { await api.deployments.argoPromote(deploymentId, full); toast(full ? 'Promote-full sent' : 'Promote sent', 'success'); }
+    catch (err) { toast(`Failed: ${err.message}`, 'error'); }
+    setBusy(false);
+  };
+  const abort = async () => {
+    setBusy(true);
+    try { await api.deployments.argoAbort(deploymentId); toast('Abort sent', 'warning'); }
+    catch (err) { toast(`Failed: ${err.message}`, 'error'); }
+    setBusy(false);
+  };
+
+  return (
+    <div className="border-t-2 border-dashed border-gray-300 bg-gray-50/40 px-4 py-3">
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center space-x-2">
+          <Activity size={12} className="text-gray-500" />
+          <span className="text-[10px] font-bold uppercase tracking-widest text-gray-700">Argo Rollouts</span>
+          <span className={`text-[9px] uppercase tracking-widest font-bold border px-1.5 py-0.5 ${phaseColor}`}>{status.phase}</span>
+          {status.strategy && (
+            <span className="text-[9px] font-mono text-gray-500">{status.strategy}</span>
+          )}
+          {status.totalSteps != null && status.currentStep != null && (
+            <span className="text-[9px] font-mono text-gray-500">step {status.currentStep + 1}/{status.totalSteps}</span>
+          )}
+        </div>
+        <div className="flex items-center space-x-2">
+          {status.phase === 'Paused' && (
+            <button onClick={() => promote(false)} disabled={busy}
+              className="text-[9px] font-bold uppercase tracking-widest px-2 py-1 border-2 border-gray-900 hover:bg-gray-900 hover:text-white flex items-center disabled:opacity-50">
+              <Play size={10} className="mr-1" /> Promote
+            </button>
+          )}
+          {(status.phase === 'Paused' || status.phase === 'Progressing') && (
+            <>
+              <button onClick={() => promote(true)} disabled={busy}
+                className="text-[9px] font-bold uppercase tracking-widest px-2 py-1 border border-gray-300 hover:bg-gray-50 disabled:opacity-50">
+                Promote full
+              </button>
+              <button onClick={abort} disabled={busy}
+                className="text-[9px] font-bold uppercase tracking-widest px-2 py-1 border border-red-300 text-red-600 hover:bg-red-50 flex items-center disabled:opacity-50">
+                <Square size={10} className="mr-1" /> Abort
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+      {status.weight != null && (
+        <div className="relative h-2 bg-gray-200 border border-gray-900">
+          <div className={`absolute left-0 top-0 bottom-0 transition-all ${
+            status.phase === 'Healthy' ? 'bg-green-500' :
+            status.phase === 'Degraded' ? 'bg-red-500' :
+            status.phase === 'Paused' ? 'bg-amber-500' : 'bg-blue-500'
+          }`} style={{ width: `${Math.min(100, Math.max(0, status.weight))}%` }} />
+          <span className="absolute right-1 -top-3.5 text-[9px] font-mono font-bold text-gray-700">{status.weight}% canary</span>
+        </div>
+      )}
+      {status.activeSelector && (
+        <div className="text-[10px] font-mono text-gray-500 mt-1">active: <span className="text-gray-900">{status.activeSelector}</span></div>
+      )}
+      {status.message && status.phase !== 'Healthy' && (
+        <div className="text-[10px] font-mono text-gray-500 mt-1">{status.message}</div>
+      )}
     </div>
   );
 }

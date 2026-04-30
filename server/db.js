@@ -397,6 +397,8 @@ CREATE INDEX IF NOT EXISTS idx_db_migrations_status ON db_migrations(status, cre
 -- Phase 4: real K8s integration
 ALTER TABLE gitops_apps ADD COLUMN IF NOT EXISTS cluster_connector_id TEXT;
 ALTER TABLE services ADD COLUMN IF NOT EXISTS deploy_target JSONB;
+ALTER TABLE chaos_experiments ADD COLUMN IF NOT EXISTS cluster_connector_id TEXT;
+ALTER TABLE chaos_runs ADD COLUMN IF NOT EXISTS injected_resource TEXT;
 `;
 
 export async function initDb() {

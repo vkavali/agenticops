@@ -5,10 +5,11 @@ import { useApp } from './store';
 import { PageHeader, Badge, EmptyState, MetricCard, fmtAgo } from './components/views';
 
 export default function ChaosView() {
-  const { chaosExperiments, setChaosExperiments, slos, services, toast } = useApp();
+  const { chaosExperiments, setChaosExperiments, slos, services, cloudConnectors, toast } = useApp();
   const [runs, setRuns] = useState([]);
   const [showCreate, setShowCreate] = useState(false);
-  const [draft, setDraft] = useState({ name: '', target_service: '', fault_type: 'latency', duration_ms: 60000, blast_radius_pct: 10, abort_on_slo_id: '' });
+  const [draft, setDraft] = useState({ name: '', target_service: '', fault_type: 'latency', duration_ms: 60000, blast_radius_pct: 10, abort_on_slo_id: '', cluster_connector_id: '' });
+  const k8sConnectors = (cloudConnectors || []).filter(c => c.provider === 'kubernetes');
 
   useEffect(() => {
     api.chaos.listRuns(100).then(setRuns).catch(() => {});
@@ -18,7 +19,9 @@ export default function ChaosView() {
     if (!draft.name || !draft.target_service) return toast('name and target required', 'warning');
     try {
       const exp = await api.chaos.createExperiment({
-        ...draft, abort_on_slo_id: draft.abort_on_slo_id || null,
+        ...draft,
+        abort_on_slo_id: draft.abort_on_slo_id || null,
+        cluster_connector_id: draft.cluster_connector_id || null,
       });
       setChaosExperiments(prev => [exp, ...prev]);
       setShowCreate(false); setDraft({ name: '', target_service: '', fault_type: 'latency', duration_ms: 60000, blast_radius_pct: 10, abort_on_slo_id: '' });
@@ -146,6 +149,12 @@ export default function ChaosView() {
                 <select value={draft.abort_on_slo_id} onChange={e => setDraft({ ...draft, abort_on_slo_id: e.target.value })} className="w-full px-2 py-1 border border-gray-300 text-xs">
                   <option value="">— none —</option>
                   {slos.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              </Field>
+              <Field label="K8s connector (real Chaos Mesh CRD apply)">
+                <select value={draft.cluster_connector_id} onChange={e => setDraft({ ...draft, cluster_connector_id: e.target.value })} className="w-full px-2 py-1 border border-gray-300 text-xs">
+                  <option value="">— none (simulated, no real fault) —</option>
+                  {k8sConnectors.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                 </select>
               </Field>
             </div>

@@ -22,7 +22,7 @@ router.get('/experiments/:id', async (req, res) => {
 });
 
 router.post('/experiments', operator, async (req, res) => {
-  const { name, target_service, fault_type, fault_config, blast_radius_pct, duration_ms, hypothesis, abort_on_slo_id } = req.body;
+  const { name, target_service, fault_type, fault_config, blast_radius_pct, duration_ms, hypothesis, abort_on_slo_id, cluster_connector_id } = req.body;
   if (!name || !target_service || !fault_type) {
     return res.status(400).json({ error: 'name, target_service, fault_type required' });
   }
@@ -32,11 +32,11 @@ router.post('/experiments', operator, async (req, res) => {
   const id = `exp-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
   await execute(
     `INSERT INTO chaos_experiments (id, name, target_service, fault_type, fault_config,
-       blast_radius_pct, duration_ms, hypothesis, abort_on_slo_id, created_at, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+       blast_radius_pct, duration_ms, hypothesis, abort_on_slo_id, cluster_connector_id, created_at, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
     [id, name, target_service, fault_type, JSON.stringify(fault_config || {}),
      blast_radius_pct ?? 10, duration_ms ?? 60000, hypothesis || null,
-     abort_on_slo_id || null, Date.now(), req.auth?.label || null]
+     abort_on_slo_id || null, cluster_connector_id || null, Date.now(), req.auth?.label || null]
   );
   const row = await queryOne('SELECT * FROM chaos_experiments WHERE id=$1', [id]);
   broadcast('chaos:experiment-created', row);

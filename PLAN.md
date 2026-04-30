@@ -217,7 +217,19 @@ Grade (A-F), MetricCard, EmptyState, fmtUSD/fmtPct/fmtAgo.
       findings rows. Stage fails on critical findings unless
       `stage.allow_critical` is set — that's the deployment gate from
       pipelines.
-- [ ] **Follow-on**: real chaos provider (Chaos Mesh).
+- [x] **Real Chaos Mesh integration** (`server/chaos-mesh.js`): pure
+      CRD generator maps each `fault_type` to a Chaos Mesh resource —
+      PodChaos (pod-kill), NetworkChaos (latency, network-loss),
+      StressChaos (cpu-stress), HTTPChaos (error-rate). Blast-radius
+      maps to mode: 100→all, 1→one, mid→fixed-percent. `chaos.js`
+      applies the CRD via `kubectl apply -f -` when the experiment has
+      a `cluster_connector_id`, records the resource ref on the run,
+      and `kubectl delete`s it on completion / abort / SLO-burn auto-
+      abort. Falls back to simulation when no connector is set.
+- [x] **DeploymentsView Argo UI** — canary deployments now show a live
+      weight bar (polled every 5s from `/argo/status`), step counter,
+      phase badge (Progressing/Healthy/Paused/Degraded), and Promote /
+      Promote-full / Abort buttons. Strategy badge added to each row.
 - [ ] **Follow-on**: Playwright e2e covering incident → agent → PR →
       merge → apply against a kind cluster.
 

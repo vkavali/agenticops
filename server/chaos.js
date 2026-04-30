@@ -1,7 +1,13 @@
 import crypto from 'crypto';
+import { spawn } from 'child_process';
+import { mkdtemp, writeFile, rm } from 'fs/promises';
+import path from 'path';
+import os from 'os';
 import { query, queryOne, execute } from './db.js';
 import { broadcast } from './sse.js';
 import { createGate } from './routes/gates.js';
+import { generateCrd, crdResourceRef } from './chaos-mesh.js';
+import { decrypt } from './crypto.js';
 
 // Chaos Engineering.
 //
@@ -18,13 +24,110 @@ const TICK_MS = 5000;
 
 const inFlight = new Map(); // runId -> tick interval
 
-async function startInjection(run) {
-  // Stub: emit an observation event indicating the fault is "active".
-  broadcast('chaos:fault-injected', { runId: run.id });
-  await appendObservation(run.id, { event: 'fault-injected', at: Date.now() });
+// kubectl wrapper scoped to chaos so we can apply YAML via stdin without
+// pulling in the broader k8s.js dependency graph (which is also fine, but
+// chaos has slightly different needs — apply with -f - vs apply -k).
+async function withKubeconfig(connectorId) {
+  const conn = await queryOne('SELECT * FROM cloud_connectors WHERE id=$1', [connectorId]);
+  if (!conn) throw new Error('connector not found');
+  const env = typeof conn.credentials === 'string' ? JSON.parse(conn.credentials) : conn.credentials;
+  const creds = env?.enc ? JSON.parse(decrypt(env.enc)) : env;
+  if (!creds?.kubeconfig) throw new Error('connector missing kubeconfig');
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'aops-chaos-'));
+  const kubeconfigPath = path.join(dir, 'kubeconfig.yaml');
+  await writeFile(kubeconfigPath, creds.kubeconfig, { mode: 0o600 });
+  return { kubeconfigPath, cleanup: () => rm(dir, { recursive: true, force: true }).catch(() => {}) };
 }
 
-async function clearInjection(run, reason) {
+function spawnKubectl(args, kubeconfigPath, stdin = null) {
+  return new Promise((resolve) => {
+    const proc = spawn('kubectl', args, { env: { ...process.env, KUBECONFIG: kubeconfigPath }, timeout: 60_000 });
+    const out = []; const err = [];
+    proc.stdout.on('data', d => out.push(d.toString()));
+    proc.stderr.on('data', d => err.push(d.toString()));
+    proc.on('close', code => resolve({ exitCode: code ?? 0, stdout: out.join(''), stderr: err.join('') }));
+    proc.on('error', e => resolve({ exitCode: 127, stdout: '', stderr: e.message }));
+    if (stdin) { proc.stdin.write(stdin); proc.stdin.end(); }
+  });
+}
+
+// Tiny YAML emitter for the CRD shapes we generate. Avoids pulling in a YAML
+// dep just for this — the shapes are simple and well-known. kubectl also
+// accepts JSON via `apply -f -`, but `kind: NetworkChaos` reads better as YAML
+// in the audit log + observations.
+function toYaml(obj, indent = 0) {
+  const pad = '  '.repeat(indent);
+  if (obj == null) return 'null';
+  if (typeof obj === 'string') {
+    return /[:#\-{}\[\],&*?|<>=!%@\\]|^[\s]|[\s]$/.test(obj) ? JSON.stringify(obj) : obj;
+  }
+  if (typeof obj === 'number' || typeof obj === 'boolean') return String(obj);
+  if (Array.isArray(obj)) {
+    if (obj.length === 0) return '[]';
+    return obj.map(item => `${pad}- ${
+      typeof item === 'object' && item !== null
+        ? '\n' + toYaml(item, indent + 1).replace(/^/gm, '  ').trimStart()
+        : toYaml(item)
+    }`).join('\n');
+  }
+  return Object.entries(obj).map(([k, v]) => {
+    if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
+      return `${pad}${k}:\n${toYaml(v, indent + 1)}`;
+    }
+    if (Array.isArray(v) && v.length > 0) {
+      return `${pad}${k}:\n${toYaml(v, indent + 1)}`;
+    }
+    return `${pad}${k}: ${toYaml(v, indent + 1)}`;
+  }).join('\n');
+}
+
+async function startInjection(run, experiment) {
+  if (experiment.cluster_connector_id) {
+    try {
+      const crd = generateCrd(experiment, experiment.fault_config?.namespace || 'default');
+      const yaml = toYaml(crd);
+      const { kubeconfigPath, cleanup } = await withKubeconfig(experiment.cluster_connector_id);
+      try {
+        const r = await spawnKubectl(['apply', '-f', '-'], kubeconfigPath, yaml);
+        if (r.exitCode === 0) {
+          const ref = crdResourceRef(crd);
+          await execute('UPDATE chaos_runs SET injected_resource=$1 WHERE id=$2',
+            [`${ref.kind}/${ref.name} -n ${ref.namespace}`, run.id]);
+          await appendObservation(run.id, { event: 'fault-injected', resource: ref, at: Date.now() });
+          broadcast('chaos:fault-injected', { runId: run.id, resource: ref });
+        } else {
+          await appendObservation(run.id, { event: 'fault-inject-failed', stderr: r.stderr, at: Date.now() });
+          broadcast('chaos:fault-injected', { runId: run.id, error: r.stderr });
+          throw new Error(r.stderr || 'kubectl apply failed');
+        }
+      } finally { await cleanup(); }
+      return;
+    } catch (err) {
+      // Fall through to simulated mode if kubectl/CRD apply fails.
+      await appendObservation(run.id, { event: 'fault-inject-error', message: err.message, at: Date.now() });
+    }
+  }
+  // Simulated path — same as before; useful for demos without a cluster.
+  broadcast('chaos:fault-injected', { runId: run.id, simulated: true });
+  await appendObservation(run.id, { event: 'fault-injected', simulated: true, at: Date.now() });
+}
+
+async function clearInjection(run, reason, experiment) {
+  if (experiment?.cluster_connector_id && run.injected_resource) {
+    try {
+      // Format we stored: "Kind/name -n namespace"
+      const m = run.injected_resource.match(/^(\S+)\/(\S+)\s+-n\s+(\S+)$/);
+      if (m) {
+        const [, kind, name, namespace] = m;
+        const { kubeconfigPath, cleanup } = await withKubeconfig(experiment.cluster_connector_id);
+        try {
+          await spawnKubectl(['delete', kind, name, '-n', namespace, '--ignore-not-found'], kubeconfigPath);
+        } finally { await cleanup(); }
+      }
+    } catch (err) {
+      await appendObservation(run.id, { event: 'fault-clear-error', message: err.message, at: Date.now() });
+    }
+  }
   broadcast('chaos:fault-cleared', { runId: run.id, reason });
   await appendObservation(run.id, { event: 'fault-cleared', reason, at: Date.now() });
 }
@@ -69,7 +172,7 @@ async function executeRun(runId) {
   broadcast('chaos:run-started', { id: runId, experiment_id: exp.id });
 
   try {
-    await startInjection(run);
+    await startInjection(run, exp);
     const startedAt = Date.now();
     const durationMs = Number(exp.duration_ms);
 
@@ -77,12 +180,15 @@ async function executeRun(runId) {
       try {
         const reason = await checkAbortConditions(run, exp);
         if (reason) {
-          await clearInjection(run, reason);
+          // Re-read the run so we pick up injected_resource set by startInjection.
+          const fresh = await queryOne('SELECT * FROM chaos_runs WHERE id=$1', [runId]);
+          await clearInjection(fresh || run, reason, exp);
           await finishRun(runId, 'aborted', reason);
           return;
         }
         if (Date.now() - startedAt >= durationMs) {
-          await clearInjection(run, 'duration-elapsed');
+          const fresh = await queryOne('SELECT * FROM chaos_runs WHERE id=$1', [runId]);
+          await clearInjection(fresh || run, 'duration-elapsed', exp);
           await finishRun(runId, 'completed');
         }
       } catch (err) {
@@ -105,7 +211,8 @@ export async function startChaosRun(runId) {
 export async function abortRun(runId, reason = 'manual') {
   const run = await queryOne('SELECT * FROM chaos_runs WHERE id=$1', [runId]);
   if (!run || !['pending', 'running'].includes(run.status)) return false;
-  await clearInjection(run, reason);
+  const exp = await queryOne('SELECT * FROM chaos_experiments WHERE id=$1', [run.experiment_id]);
+  await clearInjection(run, reason, exp);
   await finishRun(runId, 'aborted', reason);
   return true;
 }
