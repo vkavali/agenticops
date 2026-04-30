@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { query, queryOne, execute } from '../db.js';
 import { requireAuth } from '../auth.js';
 import { computeScorecards, latestScorecards } from '../idp.js';
+import { importAll, importOneRepo } from '../catalog-import.js';
 
 const router = Router();
 const operator = requireAuth('operator');
@@ -45,6 +46,21 @@ router.patch('/services/:id', operator, async (req, res) => {
 router.post('/recompute', operator, async (req, res) => {
   computeScorecards().catch(err => console.error('Manual scorecard recompute:', err));
   res.status(202).json({ ok: true });
+});
+
+// Import catalog-info.yaml from connected repos. Backstage-style spec.
+router.post('/catalog/import', operator, async (req, res) => {
+  try {
+    const results = await importAll();
+    res.json({ ok: true, results });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.post('/catalog/import/:owner/:repo', operator, async (req, res) => {
+  try {
+    const result = await importOneRepo(`${req.params.owner}/${req.params.repo}`);
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 export default router;

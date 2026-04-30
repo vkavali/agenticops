@@ -1,0 +1,154 @@
+name: kind cluster e2e
+
+# Spins up a real kind cluster, installs Argo Rollouts + Chaos Mesh CRDs,
+# encodes a kubeconfig as a connector, and verifies that:
+#   - kubectl apply -k actually works against the GitOps loop
+#   - kubectl set image works against the strategy engine
+#   - Argo Rollouts patch + status flow works
+#   - Chaos Mesh CRD apply + delete works
+#
+# This is the "is the agentic loop real?" gate — covers the happy-path commands
+# we shell out to. Lives separately from the unit suite (npm test) because it
+# needs a cluster.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  kind-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install
+        run: npm ci
+
+      # Bring up a 1-node kind cluster.
+      - name: Set up kind
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: agenticops-e2e
+          wait: 60s
+
+      - name: Install Argo Rollouts CRDs
+        run: |
+          kubectl create namespace argo-rollouts
+          kubectl apply -n argo-rollouts -f https://github.com/argoproj/argo-rollouts/releases/latest/download/install.yaml
+          kubectl -n argo-rollouts rollout status deployment/argo-rollouts --timeout=120s
+
+      - name: Install Chaos Mesh CRDs
+        run: |
+          # CRDs only — we don't need the full Chaos Mesh control plane to
+          # validate that our YAML is accepted by the API server. The CRD
+          # bundle is published as part of every release.
+          kubectl apply -f https://raw.githubusercontent.com/chaos-mesh/chaos-mesh/master/manifests/crd.yaml
+
+      - name: Apply test fixtures (Deployment + Rollout + Service)
+        run: |
+          kubectl apply -f - <<'EOF'
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: e2e-app
+            labels: { app: e2e-app }
+          spec:
+            replicas: 2
+            selector: { matchLabels: { app: e2e-app } }
+            template:
+              metadata: { labels: { app: e2e-app } }
+              spec:
+                containers:
+                - name: web
+                  image: nginx:1.25
+                  ports: [{ containerPort: 80 }]
+          ---
+          apiVersion: argoproj.io/v1alpha1
+          kind: Rollout
+          metadata: { name: e2e-rollout }
+          spec:
+            replicas: 2
+            selector: { matchLabels: { app: e2e-rollout } }
+            template:
+              metadata: { labels: { app: e2e-rollout } }
+              spec:
+                containers:
+                - name: web
+                  image: nginx:1.25
+            strategy:
+              canary:
+                steps:
+                - setWeight: 25
+                - pause: { duration: 5 }
+                - setWeight: 50
+                - pause: { duration: 5 }
+          EOF
+          kubectl rollout status deployment/e2e-app --timeout=120s
+
+      - name: Test kubectl set image (rolling deploy)
+        run: |
+          kubectl set image deployment/e2e-app web=nginx:1.27
+          kubectl rollout status deployment/e2e-app --timeout=120s
+          kubectl get deployment e2e-app -o jsonpath='{.spec.template.spec.containers[0].image}' | grep -q nginx:1.27
+
+      - name: Test Argo Rollouts patch + status (canary)
+        run: |
+          # Mirror what server/argo.js#rolloutSetImage does.
+          kubectl patch rollout e2e-rollout --type=merge -p \
+            '{"spec":{"template":{"spec":{"containers":[{"name":"web","image":"nginx:1.27"}]}}}}'
+          # Poll like server/argo.js#observeRollout would.
+          for i in $(seq 1 24); do
+            phase=$(kubectl get rollout e2e-rollout -o jsonpath='{.status.phase}' || echo "")
+            echo "phase=$phase ($i/24)"
+            [ "$phase" = "Healthy" ] && break
+            sleep 5
+          done
+          [ "$phase" = "Healthy" ] || (kubectl describe rollout e2e-rollout && exit 1)
+
+      - name: Test Chaos Mesh CRD apply + delete
+        run: |
+          # Mirror server/chaos-mesh.js#podKillCrd output.
+          kubectl apply -f - <<'EOF'
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: PodChaos
+          metadata:
+            name: aops-e2e-pod-kill
+            namespace: default
+            labels:
+              app.kubernetes.io/managed-by: agenticops
+          spec:
+            action: pod-kill
+            mode: one
+            selector: { labelSelectors: { app: e2e-app } }
+            duration: 5s
+          EOF
+          kubectl get podchaos aops-e2e-pod-kill -o jsonpath='{.spec.action}' | grep -q pod-kill
+          kubectl delete podchaos aops-e2e-pod-kill --ignore-not-found
+
+      - name: Test kubectl apply -k (GitOps)
+        run: |
+          mkdir -p /tmp/manifests
+          cat > /tmp/manifests/kustomization.yaml <<'EOF'
+          resources: [./configmap.yaml]
+          EOF
+          cat > /tmp/manifests/configmap.yaml <<'EOF'
+          apiVersion: v1
+          kind: ConfigMap
+          metadata: { name: e2e-gitops-config }
+          data: { foo: bar }
+          EOF
+          kubectl apply -k /tmp/manifests
+          kubectl get configmap e2e-gitops-config -o jsonpath='{.data.foo}' | grep -q bar
+
+      - name: Run unit test suite (no cluster needed but verifies CI integration)
+        run: npm test

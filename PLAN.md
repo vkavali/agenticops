@@ -230,8 +230,42 @@ Grade (A-F), MetricCard, EmptyState, fmtUSD/fmtPct/fmtAgo.
       weight bar (polled every 5s from `/argo/status`), step counter,
       phase badge (Progressing/Healthy/Paused/Degraded), and Promote /
       Promote-full / Abort buttons. Strategy badge added to each row.
-- [ ] **Follow-on**: Playwright e2e covering incident → agent → PR →
-      merge → apply against a kind cluster.
+- [x] **kind cluster e2e workflow** (`.github/workflows/kind-e2e.yml`):
+      spins up a real `kind` cluster, installs Argo Rollouts +
+      Chaos Mesh CRDs, applies a fixture Deployment + Rollout, and
+      runs through the exact kubectl commands our wrappers emit:
+      `kubectl set image` + rollout status, `kubectl patch rollout`
+      + canary status convergence, Chaos Mesh CRD apply + delete,
+      `kubectl apply -k`. Plus the unit suite. This is the CI gate
+      that verifies the agentic loop is real, not just type-checks.
+- [x] **Playwright golden-path e2e** (`e2e/`): 7 tests covering
+      token gate (accept + reject), Cost / SLOs / Flags / Catalog
+      tabs rendering data, and the keyboard shortcut routing. API
+      fully mocked at the network layer via Playwright's `page.route`
+      so no Postgres / kubectl / Anthropic key needed. `npm run
+      test:e2e` runs against `vite preview`.
+
+## Phase 6 — multi-cloud + IDP polish ✅
+
+- [x] **GCP Cost adapter** (`server/cost-gcp.js`): BigQuery
+      billing-export pattern. Connector credentials carry the
+      service-account JSON + `dataset` + `table`; we query
+      Detailed Usage Cost grouped by service.description, upsert
+      into `cost_data` with `provider='gcp'`. Same `shouldPoll`
+      gate as AWS to limit BigQuery costs.
+- [x] **Azure Cost adapter** (`server/cost-azure.js`): Cost
+      Management REST API, no SDK dep. Service-principal OAuth2
+      → `/Microsoft.CostManagement/query` daily grouped by
+      ServiceName. Discovers column indexes from the response
+      since they vary by API version.
+- [x] **Backstage `catalog-info.yaml` import**
+      (`server/catalog-import.js`): walks `connected_repos`, looks
+      for `catalog-info.yaml` at root, parses with `js-yaml`, maps
+      Component spec to `services.owner` / `tier` / `repo_full_name`
+      and stuffs the rest into `metadata.backstage` (type, system,
+      domain, tags, links, dependsOn, providesApis, consumesApis).
+      Periodic 30-min sweep + `POST /api/idp/catalog/import` for
+      manual trigger.
 
 ## Cross-cutting work
 

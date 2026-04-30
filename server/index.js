@@ -37,6 +37,9 @@ import { startRolloutController } from './flags.js';
 import costRouter from './routes/cost.js';
 import { startCostSweep, seedSyntheticCosts } from './cost.js';
 import { startAwsCostPoller } from './cost-aws.js';
+import { startGcpCostPoller } from './cost-gcp.js';
+import { startAzureCostPoller } from './cost-azure.js';
+import { startCatalogSweep } from './catalog-import.js';
 import chaosRouter from './routes/chaos.js';
 import { onGateDecision as chaosOnGate } from './chaos.js';
 import idpRouter from './routes/idp.js';
@@ -151,6 +154,9 @@ async function start() {
     startRolloutController();
     startCostSweep();
     startAwsCostPoller();
+    startGcpCostPoller();
+    startAzureCostPoller();
+    startCatalogSweep();
     startScorecardSweep();
     startGitOpsSweep();
     app.listen(PORT, '0.0.0.0', () => {
