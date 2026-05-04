@@ -131,9 +131,24 @@ app.get('/api/auth/me', (req, res) => {
 
 // Serve production build
 const distPath = path.resolve(__dirname, '..', 'dist');
+const { existsSync } = await import('fs');
+if (!existsSync(path.join(distPath, 'index.html'))) {
+  console.warn(`⚠ dist/index.html missing at ${distPath} — frontend will 404. Run \`npm run build\`.`);
+}
 app.use(express.static(distPath));
 app.get(/^(?!\/api).*/, (req, res) => {
-  res.sendFile(path.join(distPath, 'index.html'));
+  res.sendFile(path.join(distPath, 'index.html'), (err) => {
+    if (err) {
+      // Make the failure mode obvious instead of silently sending a blank page.
+      res.status(500).type('text/html').send(
+        `<!doctype html><html><body style="font:14px monospace;padding:2rem">
+         <h2>AgenticOps frontend not built</h2>
+         <p><code>dist/index.html</code> missing on the server.</p>
+         <p>Run <code>npm run build</code> in the deploy environment.</p>
+         </body></html>`
+      );
+    }
+  });
 });
 
 // Boot

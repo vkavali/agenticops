@@ -1,0 +1,31 @@
+# Railway / Nixpacks build config.
+#
+# The default Node provider runs `npm ci && npm run build`. Two issues we hit
+# without this file:
+#   1. Playwright's postinstall hook downloads ~700MB of browsers, which can
+#      time out or exhaust the build environment on Railway. We skip it via
+#      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 — Playwright tests live in their own
+#      CI job, never on the production server.
+#   2. Some optional native bindings (e.g. @google-cloud/bigquery's gRPC) can
+#      fail to compile without build tools. The runtime now lazy-loads
+#      BigQuery, so a build-time failure in the SDK isn't fatal — but giving
+#      Nixpacks node-gyp deps avoids the noise.
+
+providers = ["node"]
+
+[variables]
+PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1"
+NPM_CONFIG_AUDIT = "false"
+NPM_CONFIG_FUND = "false"
+
+[phases.setup]
+nixPkgs = ["nodejs_20", "git"]
+
+[phases.install]
+cmds = ["npm ci --no-audit --no-fund --prefer-offline"]
+
+[phases.build]
+cmds = ["npm run build"]
+
+[start]
+cmd = "node server/index.js"
