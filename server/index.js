@@ -1,5 +1,4 @@
 import express from 'express';
-import cors from 'cors';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import dotenv from 'dotenv';
@@ -55,18 +54,52 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// CORS allowlist. Comma-separated origins via APP_CORS_ORIGINS.
-// Default to no cross-origin requests in production; allow localhost dev URLs otherwise.
-const corsOrigins = (process.env.APP_CORS_ORIGINS || 'http://localhost:5173,http://localhost:3000')
+// Trust Railway / proxy headers so req.protocol reflects the public scheme.
+app.set('trust proxy', true);
+
+// CORS allowlist. Built from three sources, in priority order:
+//   1. Same-origin: Origin matches the request's own host (always allowed).
+//      This is the path that just-works behind Railway / Fly / Vercel without
+//      any config — the frontend and API live on the same domain.
+//   2. Auto-detected platform domains: RAILWAY_PUBLIC_DOMAIN + APP_URL.
+//   3. Manual allowlist: APP_CORS_ORIGINS (comma-separated) for additional
+//      cross-origin clients (separate frontend, mobile app, etc.).
+//
+// We custom-handle CORS instead of using the `cors` middleware so the same-
+// origin check can read the request's Host header (which the cors middleware
+// doesn't expose to its origin callback).
+const manualOrigins = (process.env.APP_CORS_ORIGINS || 'http://localhost:5173,http://localhost:3000')
   .split(',').map(s => s.trim()).filter(Boolean);
-app.use(cors({
-  origin: (origin, cb) => {
-    if (!origin) return cb(null, true); // same-origin / curl
-    if (corsOrigins.includes(origin)) return cb(null, true);
-    cb(new Error(`Origin ${origin} not allowed`));
-  },
-  credentials: true,
-}));
+const platformOrigins = [
+  process.env.RAILWAY_PUBLIC_DOMAIN && `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`,
+  process.env.APP_URL && process.env.APP_URL.replace(/\/+$/, ''),
+].filter(Boolean);
+const allowlist = new Set([...manualOrigins, ...platformOrigins]);
+console.log(`✓ CORS allowlist (in addition to same-origin): ${[...allowlist].join(', ') || '(none)'}`);
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (!origin) return next(); // not a CORS request — curl, server-to-server, etc.
+
+  const host = req.headers['x-forwarded-host'] || req.headers.host;
+  const proto = req.headers['x-forwarded-proto'] || req.protocol;
+  const sameOrigin = origin === `${proto}://${host}`;
+
+  if (sameOrigin || allowlist.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Vary', 'Origin');
+    if (req.method === 'OPTIONS') {
+      res.setHeader('Access-Control-Allow-Headers', req.headers['access-control-request-headers'] || 'authorization,content-type');
+      res.setHeader('Access-Control-Allow-Methods', req.headers['access-control-request-method'] || 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+      res.setHeader('Access-Control-Max-Age', '600');
+      return res.status(204).end();
+    }
+    return next();
+  }
+
+  return res.status(403).json({ error: `Origin ${origin} not allowed` });
+});
 
 // Capture raw body for webhook HMAC verification.
 app.use(express.json({
