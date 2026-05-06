@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { query, execute, queryOne } from '../db.js';
 import { broadcast } from '../sse.js';
 import { requireAuth } from '../auth.js';
+import * as notify from '../notify.js';
 
 const router = Router();
 const operator = requireAuth('operator');
@@ -41,6 +42,7 @@ router.post('/', operator, async (req, res) => {
   const inc = { id, title, service, severity: severity || 'warning', status: 'active', opened: 'Just now', timestamp: now, assignee: assignee || 'ops-team', description: description || '', timeline };
   broadcast('incident:created', inc);
   broadcast('activity:new', { event: `${id} opened: ${title}`, type: 'incident', timestamp: now });
+  notify.incidentOpened(req.auth?.orgId, inc).catch(err => console.error('notify.incidentOpened:', err.message));
   res.status(201).json(inc);
 });
 
@@ -63,6 +65,7 @@ router.post('/:id/resolve', operator, async (req, res) => {
   await execute('UPDATE incidents SET status=$1, resolved=$2, timeline=$3 WHERE id=$4', ['resolved', 'Just now', JSON.stringify(timeline), id]);
   await execute('INSERT INTO activity (event,type,activity_timestamp) VALUES ($1,$2,$3)', [`${id} resolved`, 'incident', Date.now()]);
   broadcast('incident:updated', { id, status: 'resolved', timeline });
+  notify.incidentResolved(req.auth?.orgId, inc).catch(err => console.error('notify.incidentResolved:', err.message));
   res.json({ ok: true });
 });
 

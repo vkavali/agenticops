@@ -399,6 +399,82 @@ ALTER TABLE gitops_apps ADD COLUMN IF NOT EXISTS cluster_connector_id TEXT;
 ALTER TABLE services ADD COLUMN IF NOT EXISTS deploy_target JSONB;
 ALTER TABLE chaos_experiments ADD COLUMN IF NOT EXISTS cluster_connector_id TEXT;
 ALTER TABLE chaos_runs ADD COLUMN IF NOT EXISTS injected_resource TEXT;
+
+-- Phase 7: enterprise readiness — multi-tenancy, OIDC, integrations, canary analysis
+CREATE TABLE IF NOT EXISTS orgs (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  slug TEXT UNIQUE,
+  created_at BIGINT NOT NULL
+);
+INSERT INTO orgs (id, name, slug, created_at)
+  VALUES ('org-default', 'Default', 'default', EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)
+  ON CONFLICT (id) DO NOTHING;
+
+ALTER TABLE api_tokens ADD COLUMN IF NOT EXISTS org_id TEXT REFERENCES orgs(id) DEFAULT 'org-default';
+ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS org_id TEXT REFERENCES orgs(id) DEFAULT 'org-default';
+ALTER TABLE services ADD COLUMN IF NOT EXISTS org_id TEXT REFERENCES orgs(id) DEFAULT 'org-default';
+ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS org_id TEXT REFERENCES orgs(id) DEFAULT 'org-default';
+ALTER TABLE deployments ADD COLUMN IF NOT EXISTS org_id TEXT REFERENCES orgs(id) DEFAULT 'org-default';
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS org_id TEXT REFERENCES orgs(id) DEFAULT 'org-default';
+ALTER TABLE slos ADD COLUMN IF NOT EXISTS org_id TEXT REFERENCES orgs(id) DEFAULT 'org-default';
+ALTER TABLE flags ADD COLUMN IF NOT EXISTS org_id TEXT REFERENCES orgs(id) DEFAULT 'org-default';
+ALTER TABLE iac_configs ADD COLUMN IF NOT EXISTS org_id TEXT REFERENCES orgs(id) DEFAULT 'org-default';
+ALTER TABLE gitops_apps ADD COLUMN IF NOT EXISTS org_id TEXT REFERENCES orgs(id) DEFAULT 'org-default';
+ALTER TABLE db_migrations ADD COLUMN IF NOT EXISTS org_id TEXT REFERENCES orgs(id) DEFAULT 'org-default';
+ALTER TABLE chaos_experiments ADD COLUMN IF NOT EXISTS org_id TEXT REFERENCES orgs(id) DEFAULT 'org-default';
+ALTER TABLE cloud_connectors ADD COLUMN IF NOT EXISTS org_id TEXT REFERENCES orgs(id) DEFAULT 'org-default';
+
+CREATE TABLE IF NOT EXISTS oidc_configs (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL REFERENCES orgs(id),
+  issuer TEXT NOT NULL,
+  client_id TEXT NOT NULL,
+  audience TEXT,
+  role_claim TEXT DEFAULT 'role',
+  groups_claim TEXT DEFAULT 'groups',
+  group_role_map JSONB DEFAULT '{}'::jsonb,
+  enabled BOOLEAN DEFAULT true,
+  created_at BIGINT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS scim_users (
+  id TEXT PRIMARY KEY,
+  external_id TEXT,
+  user_name TEXT NOT NULL,
+  display_name TEXT,
+  emails JSONB DEFAULT '[]'::jsonb,
+  active BOOLEAN DEFAULT true,
+  org_id TEXT NOT NULL REFERENCES orgs(id),
+  role TEXT DEFAULT 'viewer',
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scim_users_org ON scim_users(org_id, user_name);
+
+CREATE TABLE IF NOT EXISTS integrations (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL REFERENCES orgs(id),
+  kind TEXT NOT NULL CHECK (kind IN ('slack','pagerduty','datadog','webhook')),
+  config JSONB NOT NULL,
+  enabled BOOLEAN DEFAULT true,
+  created_at BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_integrations_org_kind ON integrations(org_id, kind);
+
+CREATE TABLE IF NOT EXISTS canary_analyses (
+  id TEXT PRIMARY KEY,
+  deployment_id TEXT,
+  service TEXT NOT NULL,
+  metric TEXT NOT NULL,
+  baseline_mean NUMERIC(10,3),
+  canary_mean NUMERIC(10,3),
+  baseline_n INTEGER,
+  canary_n INTEGER,
+  z_score NUMERIC(8,3),
+  verdict TEXT NOT NULL CHECK (verdict IN ('pass','fail','inconclusive')),
+  evaluated_at BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_canary_analyses_deploy ON canary_analyses(deployment_id, evaluated_at DESC);
 `;
 
 export async function initDb() {

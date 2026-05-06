@@ -8,7 +8,7 @@ import { addClient } from './sse.js';
 import { startSimulation } from './simulation.js';
 import { startMonitoring } from './monitor.js';
 import { bootstrapAdmin, requireAuth } from './auth.js';
-import { auditMiddleware } from './audit.js';
+import { auditMiddleware, startAuditRetentionSweep } from './audit.js';
 import { migrateSecretsAtRest } from './migrate-secrets.js';
 import { onGateDecided } from './routes/gates.js';
 import { onGateDecision as strategyOnGate } from './strategy.js';
@@ -47,6 +47,11 @@ import securityRouter from './routes/security.js';
 import gitopsRouter from './routes/gitops.js';
 import { startGitOpsSweep } from './gitops.js';
 import dbopsRouter from './routes/dbops.js';
+import oidcRouter from './routes/oidc.js';
+import orgsRouter from './routes/orgs.js';
+import integrationsRouter from './routes/integrations.js';
+import scimRouter from './routes/scim.js';
+import canaryRouter from './routes/canary.js';
 
 dotenv.config();
 
@@ -150,6 +155,11 @@ app.use('/api/idp', idpRouter);
 app.use('/api/security', securityRouter);
 app.use('/api/gitops', gitopsRouter);
 app.use('/api/dbops', dbopsRouter);
+app.use('/api/oidc', oidcRouter);
+app.use('/api/orgs', orgsRouter);
+app.use('/api/integrations', integrationsRouter);
+app.use('/api/scim', scimRouter);
+app.use('/api/canary', canaryRouter);
 
 // SSE endpoint (auth handled inside addClient)
 app.get('/api/events', (req, res) => { addClient(req, res); });
@@ -207,6 +217,7 @@ async function start() {
     startCatalogSweep();
     startScorecardSweep();
     startGitOpsSweep();
+    startAuditRetentionSweep();
     app.listen(PORT, '0.0.0.0', () => {
       console.log(`✓ AgenticOps API running on port ${PORT}`);
     });

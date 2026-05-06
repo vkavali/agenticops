@@ -1,5 +1,6 @@
 import { query, queryOne, execute } from './db.js';
 import { broadcast } from './sse.js';
+import * as notify from './notify.js';
 
 // SLO evaluator.
 //
@@ -94,11 +95,16 @@ async function maybeOpenIncident(slo, sli, burnRate) {
   );
   await execute('INSERT INTO activity (event,type,activity_timestamp) VALUES ($1,$2,$3)',
     [`${id} opened: SLO ${slo.name} burning at ${burnRate.toFixed(2)}×`, 'incident', now]);
-  broadcast('incident:created', {
+  const incident = {
     id, title: `SLO burn-rate alert: ${slo.name}`, service: slo.service, severity: 'critical',
-    status: 'active', opened: 'Just now', timestamp: now, assignee: 'AgenticOps SLO Engine', timeline,
-  });
+    status: 'active', opened: 'Just now', timestamp: now, assignee: 'AgenticOps SLO Engine',
+    description: `SLO "${slo.name}" burning at ${burnRate.toFixed(2)}× the acceptable rate.`,
+    timeline,
+  };
+  broadcast('incident:created', incident);
   broadcast('activity:new', { event: `${id} opened: SLO ${slo.name} burning`, type: 'incident', timestamp: now });
+  notify.incidentOpened(slo.org_id, incident).catch(err => console.error('notify slo incident:', err.message));
+  notify.sloBurning(slo.org_id, slo, burnRate).catch(err => console.error('notify slo burn:', err.message));
 }
 
 export async function evaluateAll() {

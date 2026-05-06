@@ -267,6 +267,52 @@ Grade (A-F), MetricCard, EmptyState, fmtUSD/fmtPct/fmtAgo.
       Periodic 30-min sweep + `POST /api/idp/catalog/import` for
       manual trigger.
 
+## Phase 7 — enterprise readiness ✅
+
+- [x] **OIDC SSO** (`server/oidc.js`): `jose` JWT verification against the
+      issuer's JWKS endpoint. Lives alongside bearer tokens — when the
+      Authorization header carries a JWT, we verify it first; falls back
+      to api_tokens lookup. Role derived from the configured `role` claim
+      or first matching group via `group_role_map`. CRUD at
+      `/api/oidc`. Enterprises hand out Okta / Azure AD / Auth0 JWTs;
+      no separate AgenticOps token mint required.
+- [x] **Multi-tenancy primitive**: `orgs` table + `org_id` foreign keys
+      on every Phase-3+ table (api_tokens, audit_log, services, pipelines,
+      deployments, incidents, slos, flags, iac_configs, gitops_apps,
+      db_migrations, chaos_experiments, cloud_connectors). Existing
+      single-tenant deploys default to `org-default` so nothing breaks.
+      `scopedQuery(req, sql)` helper injects `WHERE org_id = $N` when
+      `${ORG}` marker is used. CRUD at `/api/orgs`. *Not a full retrofit
+      of existing queries* — that's per-route work (3-4 days). The
+      foundation is here.
+- [x] **Slack + PagerDuty integrations** (`server/integrations.js`,
+      `server/notify.js`): outbound to Slack on incident open / resolve /
+      gate open / SLO burning / deploy failed. PagerDuty Events API v2
+      trigger + resolve, with dedup_key=incident.id. Inbound webhook
+      mirrors PagerDuty incident.acknowledged + .resolved into our row.
+      Generic outbound webhook with HMAC-signed payloads for arbitrary
+      integrations. CRUD at `/api/integrations`. Wired into incidents
+      router + slo.js auto-incident path.
+- [x] **Audit log retention + export**: daily retention sweep deletes
+      rows older than `AUDIT_RETENTION_DAYS` (default 365 — bump for
+      HIPAA/financial). `GET /api/audit/export?format=csv|jsonl&since=
+      &until=` streams the entire range without buffering. SOC 2
+      evidence-export covered.
+- [x] **SCIM 2.0** (`server/routes/scim.js`): RFC 7644 minimal — Users
+      list/get/create/replace/patch/delete + ServiceProviderConfig +
+      Schemas. Filter `userName eq "x"` supported (which is what every
+      IdP uses). Backed by `scim_users` table. Mounted at
+      `/api/scim/v2/...`. Deprovisioning via PATCH `active=false`
+      works as IdPs expect.
+- [x] **Kayenta-style canary analysis** (`server/canary.js`): two-sample
+      Welch's t-test on baseline vs canary windows for response_time
+      (or error_rate). Verdict pass / fail / inconclusive based on
+      |t| ≥ 2 ≈ 95% confidence + n≥5 sanity check. Wired into
+      `strategy.js` Argo path: when Argo pauses awaiting promote, we
+      auto-run the analysis. fail → auto-abort the rollout (no human
+      needed); pass/inconclusive → open the approval gate with the
+      verdict in the description.
+
 ## Cross-cutting work
 
 - [ ] Replace ad-hoc `ALTER TABLE … ADD COLUMN` in `db.js` with a real

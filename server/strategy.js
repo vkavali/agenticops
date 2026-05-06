@@ -3,6 +3,7 @@ import { broadcast } from './sse.js';
 import { createGate } from './routes/gates.js';
 import { kubectlSetImage, kubectlRolloutStatus, kubectlRolloutUndo } from './k8s.js';
 import { rolloutSetImage, observeRollout, rolloutPromote, rolloutAbort } from './argo.js';
+import { analyzeCanary } from './canary.js';
 
 // Deployment strategy engine.
 // Drives phase progression for rolling / canary / blue-green deploys against a
@@ -151,18 +152,46 @@ async function realArgoDeploy(deployment, env, k8s, strategy) {
 
       // Argo pauses when a step has no `duration` (= awaiting manual promote).
       // Open an approval gate for the operator on first such pause.
+      // Before opening, run a canary analysis so the gate carries a verdict
+      // ("canary metrics look fine" / "regression detected — auto-aborting").
       if (s.phase === 'Paused' && (s.pauseConditions || []).length > 0 && !openGateId) {
+        let verdict = null;
+        try {
+          // Compare the last 5 min (canary serving traffic) vs the prior hour.
+          const now = Date.now();
+          const result = await analyzeCanary({
+            service: deployment.service,
+            metric: 'response_time',
+            baselineFromMs: now - 65 * 60 * 1000,
+            baselineUntilMs: now - 5 * 60 * 1000,
+            canaryFromMs:   now - 5 * 60 * 1000,
+            canaryUntilMs:  now,
+            deploymentId: deployment.id,
+          });
+          verdict = result.verdict;
+          broadcast('deployment:argo-canary-analysis', { runId, ...result });
+          if (verdict === 'fail') {
+            await rolloutAbort(k8s.connector_id, k8s.argo_rollout);
+            await setPhase(deployment.id, env, { status: 'failed', phase: 'argo-auto-aborted', strategy, progress: 0 });
+            await execute('INSERT INTO activity (event,type,activity_timestamp) VALUES ($1,$2,$3)',
+              [`Argo canary auto-aborted (z=${result.z_score}): ${deployment.service} ${deployment.version}`, 'deploy', Date.now()]);
+            return; // stop observing — abort path takes over
+          }
+        } catch (err) {
+          console.warn('Canary analysis failed (proceeding to gate):', err.message);
+        }
+
         openGateId = await createGate({
           subject_type: 'argo_rollout',
           subject_id: deployment.id,
-          description: `Promote canary step ${s.currentStep}/${s.totalSteps} for ${deployment.service} ${deployment.version} (${s.weight ?? '—'}% traffic)`,
+          description: `Promote canary step ${s.currentStep}/${s.totalSteps} for ${deployment.service} ${deployment.version} (${s.weight ?? '—'}% traffic)${verdict ? ` — analysis: ${verdict}` : ''}`,
           required_role: 'operator',
           requested_by: 'argo-observer',
-          payload: { deployment_id: deployment.id, env, rollout: k8s.argo_rollout, connector_id: k8s.connector_id },
+          payload: { deployment_id: deployment.id, env, rollout: k8s.argo_rollout, connector_id: k8s.connector_id, canary_verdict: verdict },
           ttl_ms: 24 * 60 * 60 * 1000,
         });
         await execute('UPDATE deployments SET gate_id=$1 WHERE id=$2', [openGateId, deployment.id]);
-        broadcast('deployment:argo-paused', { runId, gate_id: openGateId, weight: s.weight, currentStep: s.currentStep });
+        broadcast('deployment:argo-paused', { runId, gate_id: openGateId, weight: s.weight, currentStep: s.currentStep, verdict });
       }
     },
   });

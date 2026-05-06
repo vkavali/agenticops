@@ -32,3 +32,23 @@ export function auditMiddleware(req, res, next) {
   });
   next();
 }
+
+// Daily retention sweep. Default 365 days, override via AUDIT_RETENTION_DAYS.
+// SOC 2 typically requires ≥1 year of audit retention; some controls want
+// longer (HIPAA = 6 years, financial = 7). Operators bump the env var.
+export function startAuditRetentionSweep() {
+  const days = parseInt(process.env.AUDIT_RETENTION_DAYS) || 365;
+  const tick = async () => {
+    try {
+      const cutoff = Date.now() - days * 86400000;
+      const result = await execute('DELETE FROM audit_log WHERE audit_timestamp < $1', [cutoff]);
+      if (result.rowCount > 0) {
+        console.log(`✓ Audit retention sweep: deleted ${result.rowCount} rows older than ${days} days`);
+      }
+    } catch (err) {
+      console.error('Audit retention sweep failed:', err.message);
+    }
+  };
+  setInterval(tick, 24 * 60 * 60 * 1000); // daily
+  console.log(`✓ Audit retention sweep started (retention: ${days} days)`);
+}

@@ -35,7 +35,16 @@ function extractToken(req) {
   return null;
 }
 
-// Middleware: attaches req.auth = { tokenId, role, label } or 401s.
+// Middleware: attaches req.auth = { tokenId, role, label, orgId } or 401s.
+//
+// Auth resolution order:
+//   1. Try OIDC JWT verification (jose against the issuer's JWKS) when the
+//      token looks like a JWT and a matching oidc_configs row exists.
+//   2. Fall back to api_tokens lookup (sha256 hash match).
+//
+// This lets enterprises hand out IdP-issued JWTs without minting AgenticOps-
+// specific tokens, while keeping the simple bearer-token path working for
+// CI / scripts / self-host.
 export function requireAuth(minRole = 'viewer') {
   const minRank = ROLE_RANK[minRole];
   if (!minRank) throw new Error(`Unknown role: ${minRole}`);
@@ -44,17 +53,32 @@ export function requireAuth(minRole = 'viewer') {
     const raw = extractToken(req);
     if (!raw) return res.status(401).json({ error: 'Missing bearer token' });
 
-    const row = await queryOne(
-      'SELECT id, role, label FROM api_tokens WHERE token_hash=$1',
-      [hashToken(raw)]
-    );
-    if (!row) return res.status(401).json({ error: 'Invalid token' });
-
-    if (ROLE_RANK[row.role] < minRank) {
-      return res.status(403).json({ error: `Requires role ${minRole}, token has ${row.role}` });
+    // 1. OIDC JWT path
+    let auth = null;
+    try {
+      const { tryOidcAuth } = await import('./oidc.js');
+      auth = await tryOidcAuth(raw);
+    } catch (err) {
+      // Issuer reachable failure shouldn't surface to viewers as a 500;
+      // log and fall through to api_tokens.
+      console.warn('OIDC auth attempt failed:', err.message);
     }
 
-    req.auth = { tokenId: row.id, role: row.role, label: row.label };
+    // 2. api_tokens fallback
+    if (!auth) {
+      const row = await queryOne(
+        'SELECT id, role, label, org_id FROM api_tokens WHERE token_hash=$1',
+        [hashToken(raw)]
+      );
+      if (!row) return res.status(401).json({ error: 'Invalid token' });
+      auth = { tokenId: row.id, role: row.role, label: row.label, orgId: row.org_id || 'org-default' };
+    }
+
+    if (ROLE_RANK[auth.role] < minRank) {
+      return res.status(403).json({ error: `Requires role ${minRole}, token has ${auth.role}` });
+    }
+
+    req.auth = auth;
     next();
   };
 }
