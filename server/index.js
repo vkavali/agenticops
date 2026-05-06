@@ -103,7 +103,16 @@ app.use((req, res, next) => {
     return next();
   }
 
-  return res.status(403).json({ error: `Origin ${origin} not allowed` });
+  // Non-allowlisted origin — pass through WITHOUT CORS headers. The browser
+  // will block the JS from reading the response (correct, that's the point of
+  // CORS), but server-to-server tooling (health checks, monitoring, curl with
+  // -H Origin) still gets a normal response. Returning 403 here was wrong:
+  // it broke health checks and any client that happens to send Origin headers
+  // server-side.
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end(); // preflight from a non-allowed origin: 204 no-headers; browser blocks
+  }
+  next();
 });
 
 // Capture raw body for webhook HMAC verification.
