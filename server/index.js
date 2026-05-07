@@ -206,32 +206,53 @@ app.get(/^(?!\/api).*/, (req, res) => {
 // Boot
 async function start() {
   try {
+    console.log(`→ initDb (DATABASE_URL ${process.env.DATABASE_URL ? 'set' : 'MISSING'})`);
     await initDb();
-    await migrateSecretsAtRest();
-    await bootstrapAdmin();
-    await seed();
+    console.log('✓ initDb');
+    // The migrations + seeds below are best-effort. We never let a single
+    // step (e.g. seedSyntheticCosts hitting a transient error) prevent the
+    // server from listening — Railway healthcheck targets /api/health, and
+    // the app must respond on that port even if a sweeper is sad. Each step
+    // logs its name BEFORE running so the deploy log tells us exactly where
+    // a real crash happens.
+    const step = async (name, fn) => {
+      try { console.log(`→ ${name}`); await fn(); console.log(`✓ ${name}`); }
+      catch (err) { console.error(`✗ ${name} failed (continuing): ${err.message}`); }
+    };
+
+    await step('migrateSecretsAtRest', migrateSecretsAtRest);
+    await step('bootstrapAdmin', bootstrapAdmin);
+    await step('seed', seed);
+    await step('seedSyntheticCosts', seedSyntheticCosts);
+
     onGateDecided(strategyOnGate);
     onGateDecided(iacOnGate);
     onGateDecided(chaosOnGate);
-    await seedSyntheticCosts();
-    startSimulation();
-    startMonitoring();
-    startDriftSweep();
-    startSloEvaluator();
-    startRolloutController();
-    startCostSweep();
-    startAwsCostPoller();
-    startGcpCostPoller();
-    startAzureCostPoller();
-    startCatalogSweep();
-    startScorecardSweep();
-    startGitOpsSweep();
-    startAuditRetentionSweep();
+
+    // Background loops: each handles its own internal errors. Don't await
+    // — they're setInterval registrations.
+    try { startSimulation(); } catch (e) { console.error('startSimulation:', e.message); }
+    try { startMonitoring(); } catch (e) { console.error('startMonitoring:', e.message); }
+    try { startDriftSweep(); } catch (e) { console.error('startDriftSweep:', e.message); }
+    try { startSloEvaluator(); } catch (e) { console.error('startSloEvaluator:', e.message); }
+    try { startRolloutController(); } catch (e) { console.error('startRolloutController:', e.message); }
+    try { startCostSweep(); } catch (e) { console.error('startCostSweep:', e.message); }
+    try { startAwsCostPoller(); } catch (e) { console.error('startAwsCostPoller:', e.message); }
+    try { startGcpCostPoller(); } catch (e) { console.error('startGcpCostPoller:', e.message); }
+    try { startAzureCostPoller(); } catch (e) { console.error('startAzureCostPoller:', e.message); }
+    try { startCatalogSweep(); } catch (e) { console.error('startCatalogSweep:', e.message); }
+    try { startScorecardSweep(); } catch (e) { console.error('startScorecardSweep:', e.message); }
+    try { startGitOpsSweep(); } catch (e) { console.error('startGitOpsSweep:', e.message); }
+    try { startAuditRetentionSweep(); } catch (e) { console.error('startAuditRetentionSweep:', e.message); }
+
     app.listen(PORT, '0.0.0.0', () => {
       console.log(`✓ AgenticOps API running on port ${PORT}`);
     });
   } catch (err) {
-    console.error('Failed to start server:', err);
+    // Only initDb() throws here now (everything else is wrapped). If we
+    // reach this branch, Postgres itself is unreachable — the only thing
+    // that's actually fatal at boot.
+    console.error('Failed to start server (DB likely unreachable):', err);
     process.exit(1);
   }
 }

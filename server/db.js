@@ -479,8 +479,34 @@ CREATE INDEX IF NOT EXISTS idx_canary_analyses_deploy ON canary_analyses(deploym
 
 export async function initDb() {
   const client = await pool.connect();
-  try { await client.query(SCHEMA); console.log('✓ Database schema initialized'); }
-  finally { client.release(); }
+  try {
+    // Split into individual statements so one bad ALTER doesn't kill the
+    // whole boot. Each runs in its own implicit transaction; we log + skip
+    // failures rather than throwing. Idempotent statements (CREATE TABLE
+    // IF NOT EXISTS, ALTER TABLE ADD COLUMN IF NOT EXISTS, INSERT ON
+    // CONFLICT) re-run safely.
+    const statements = SCHEMA
+      .split(/;\s*$/m)
+      .map(s => s.trim())
+      .filter(Boolean);
+
+    let ok = 0, failed = 0;
+    for (const stmt of statements) {
+      try {
+        await client.query(stmt);
+        ok++;
+      } catch (err) {
+        failed++;
+        // Print the first ~80 chars of the statement so we can see which one
+        // failed without dumping kilobytes of SQL into the log.
+        const preview = stmt.replace(/\s+/g, ' ').slice(0, 80);
+        console.warn(`⚠ Schema statement failed (continuing): ${preview}…\n  ${err.message}`);
+      }
+    }
+    console.log(`✓ Database schema applied: ${ok} ok, ${failed} skipped/failed`);
+  } finally {
+    client.release();
+  }
 }
 
 export async function query(text, params) { return (await pool.query(text, params)).rows; }
