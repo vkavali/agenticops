@@ -97,6 +97,9 @@ const api = {
   // Auth — validates the current token and returns role/label
   me: () => request('GET', '/api/auth/me'),
 
+  // Login methods discovery — public endpoint, returns available SSO buttons.
+  authMethods: () => request('GET', '/api/auth/methods'),
+
   // GitHub
   github: {
     authorize: () => request('GET', '/api/github/authorize'),

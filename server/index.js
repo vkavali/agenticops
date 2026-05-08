@@ -52,6 +52,7 @@ import orgsRouter from './routes/orgs.js';
 import integrationsRouter from './routes/integrations.js';
 import scimRouter from './routes/scim.js';
 import canaryRouter from './routes/canary.js';
+import authRouter from './routes/auth.js';
 
 dotenv.config();
 
@@ -127,12 +128,22 @@ const PUBLIC_PATHS = new Set([
   '/api/events',          // SSE — auth via ?token= param inside addClient
   '/api/github/callback', // OAuth redirect, validated by state
   '/api/github/webhook',  // GitHub HMAC-signed
+  '/api/auth/methods',    // pre-login: list available login flows
 ]);
+
+// Auth start/callback paths that are public (OAuth round-trip). Express paths
+// can include params, so we test by prefix on these instead of exact match.
+const PUBLIC_PREFIXES = [
+  '/api/auth/github/',
+  '/api/auth/oidc/',
+  '/api/integrations/pagerduty/webhook',
+];
 
 // Global auth gate: every /api/* call needs at least viewer, except public paths.
 app.use((req, res, next) => {
   if (!req.path.startsWith('/api/')) return next();
   if (PUBLIC_PATHS.has(req.path)) return next();
+  if (PUBLIC_PREFIXES.some(p => req.path.startsWith(p))) return next();
   return requireAuth('viewer')(req, res, next);
 });
 
@@ -169,6 +180,7 @@ app.use('/api/orgs', orgsRouter);
 app.use('/api/integrations', integrationsRouter);
 app.use('/api/scim', scimRouter);
 app.use('/api/canary', canaryRouter);
+app.use('/api/auth', authRouter);
 
 // SSE endpoint (auth handled inside addClient)
 app.get('/api/events', (req, res) => { addClient(req, res); });
