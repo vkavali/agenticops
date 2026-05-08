@@ -29,12 +29,14 @@ const GITHUB_API = 'https://api.github.com';
 
 // In-process state cache for OAuth round-trips. 10-minute TTL — long enough
 // for human auth, short enough that abandoned flows don't accumulate.
+// Exported so /api/github/callback (mounted on the github router) can also
+// consume login states without us adding a second callback URL to GitHub.
 const stateCache = new Map();
 const STATE_TTL_MS = 10 * 60 * 1000;
-function rememberState(state, payload) {
+export function rememberState(state, payload) {
   stateCache.set(state, { payload, expiresAt: Date.now() + STATE_TTL_MS });
 }
-function consumeState(state) {
+export function consumeState(state) {
   const entry = stateCache.get(state);
   if (!entry) return null;
   stateCache.delete(state);
@@ -89,22 +91,25 @@ export { roleForGithubUser };
 
 router.get('/github/start', async (req, res) => {
   if (!GITHUB_CLIENT_ID) return res.status(503).send('GitHub login not configured');
-  const state = `gh-${crypto.randomBytes(16).toString('hex')}`;
-  rememberState(state, { kind: 'github' });
+  const state = `login-gh-${crypto.randomBytes(16).toString('hex')}`;
+  rememberState(state, { kind: 'github-login' });
+  // Use the same callback URL as the existing repo-connect flow. The shared
+  // /api/github/callback route dispatches by state prefix, which means GitHub
+  // OAuth Apps only need one registered callback URL for both flows.
   const params = new URLSearchParams({
     client_id: GITHUB_CLIENT_ID,
-    redirect_uri: `${appBase(req)}/api/auth/github/callback`,
-    scope: 'read:user',
+    redirect_uri: `${appBase(req)}/api/github/callback`,
+    scope: 'read:user user:email',
     state,
     allow_signup: 'false',
   });
   res.redirect(`https://github.com/login/oauth/authorize?${params}`);
 });
 
-router.get('/github/callback', async (req, res) => {
-  const { code, state } = req.query;
-  if (!consumeState(state)) return res.status(400).send('Invalid or expired state');
-
+// The repo-connect callback at /api/github/callback (in routes/github.js) now
+// dispatches login-flow states to handleGithubLogin (below) before falling
+// through to the existing connection-store path. Exported for that router.
+export async function handleGithubLogin(req, res, code) {
   try {
     const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
       method: 'POST',
@@ -122,7 +127,6 @@ router.get('/github/callback', async (req, res) => {
 
     const role = roleForGithubUser(user.login);
     if (!role) {
-      // Explicit denylist hit.
       return res
         .status(403)
         .type('text/html')
@@ -132,8 +136,6 @@ router.get('/github/callback', async (req, res) => {
           <p><a href="/">← back</a></p></body>`);
     }
 
-    // Replace any existing api_tokens row for this GitHub user so they always
-    // have exactly one active token. Keeps the pool clean.
     const label = `github:${user.login}`;
     const existing = await query('SELECT id FROM api_tokens WHERE label=$1', [label]);
     for (const row of existing) await revokeToken(row.id);
@@ -141,15 +143,15 @@ router.get('/github/callback', async (req, res) => {
     const { token } = await mintToken(role, label);
     await record({ actor: label, action: 'login:github', detail: { role, github_id: user.id } });
 
-    // Hand the token to the SPA via URL fragment — fragments are not sent
-    // to the server, only readable by client JS. The TokenGate extracts +
-    // strips it on mount.
     res.redirect(`${appBase(req)}/#token=${encodeURIComponent(token)}`);
   } catch (err) {
     console.error('GitHub login error:', err);
     res.status(500).send('GitHub login failed');
   }
-});
+}
+
+// Removed standalone /github/callback — it now lives at /api/github/callback
+// in the github router so GitHub OAuth Apps only need one callback URL.
 
 // ── OIDC authorization-code-with-PKCE login ──────────────────────────
 function b64url(buf) {

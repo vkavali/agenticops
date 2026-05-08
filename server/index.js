@@ -133,8 +133,10 @@ const PUBLIC_PATHS = new Set([
 
 // Auth start/callback paths that are public (OAuth round-trip). Express paths
 // can include params, so we test by prefix on these instead of exact match.
+// /api/github/callback is shared between repo-connect and login flows;
+// it's already in PUBLIC_PATHS above.
 const PUBLIC_PREFIXES = [
-  '/api/auth/github/',
+  '/api/auth/github/start',
   '/api/auth/oidc/',
   '/api/integrations/pagerduty/webhook',
 ];

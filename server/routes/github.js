@@ -5,6 +5,7 @@ import { broadcast } from '../sse.js';
 import { encrypt, decrypt } from '../crypto.js';
 import { requireAuth } from '../auth.js';
 import { onRemediationPRMerged, onRemediationPRClosed } from '../iac.js';
+import { consumeState, handleGithubLogin } from './auth.js';
 
 const router = Router();
 
@@ -25,9 +26,17 @@ router.get('/authorize', operator, (req, res) => {
 });
 
 // ── OAuth: Callback ──
+// Shared between two flows: repo-connection (default) and user login (state
+// prefix `login-`). One callback URL keeps the GitHub OAuth App config simple.
 router.get('/callback', async (req, res) => {
-  const { code } = req.query;
+  const { code, state } = req.query;
   if (!code) return res.status(400).send('Missing code');
+
+  // Login flow — dispatch to auth router. Login states start with `login-`.
+  if (typeof state === 'string' && state.startsWith('login-')) {
+    if (!consumeState(state)) return res.status(400).send('Invalid or expired state');
+    return handleGithubLogin(req, res, code);
+  }
 
   try {
     // Exchange code for access token
