@@ -6,6 +6,7 @@ import { encrypt, decrypt } from '../crypto.js';
 import { requireAuth } from '../auth.js';
 import { onRemediationPRMerged, onRemediationPRClosed } from '../iac.js';
 import { consumeState, handleGithubLogin } from './auth.js';
+import { executePipeline } from '../executor.js';
 
 const router = Router();
 
@@ -228,30 +229,24 @@ router.post('/webhook', async (req, res) => {
       const trigger = pipe.trigger_config || {};
       if (trigger.branch && trigger.branch !== branch) continue;
 
-      // Create a real pipeline run
-      const lastRun = await queryOne('SELECT number FROM pipeline_runs WHERE pipeline_id=$1 ORDER BY run_timestamp DESC LIMIT 1', [pipe.id]);
-      const lastNum = lastRun ? parseInt(lastRun.number.replace('#', ''), 10) : 0;
-      const runNumber = `#${lastNum + 1}`;
-      const runId = `r-${now}-${Math.random().toString(36).slice(2, 6)}`;
-
-      const stages = pipe.stages || [];
-      const stageResults = stages.map(s => ({
-        name: s.name, status: 'passed',
-        duration: `${Math.floor(Math.random() * 60 + 10)}s`,
-        logs: [`Triggered by push to ${branch} by ${pusher}`, `${s.name} completed`],
-      }));
-
-      await execute(
-        'INSERT INTO pipeline_runs (id,pipeline_id,number,commit_hash,message,status,duration,time,run_timestamp,triggered_by,stage_results) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
-        [runId, pipe.id, runNumber, commit?.id?.slice(0, 7) || 'unknown', commit?.message || 'push', 'passed', '2m 30s', 'Just now', now, pusher, JSON.stringify(stageResults)]
-      );
-      await execute('UPDATE pipelines SET last_run=$1, last_run_time=$2 WHERE id=$3', ['passed', 'Just now', pipe.id]);
-      await execute('INSERT INTO activity (event,type,activity_timestamp) VALUES ($1,$2,$3)',
-        [`Pipeline "${pipe.name}" ${runNumber} triggered by push to ${branch}`, 'pipeline', now]);
-
-      const run = { id: runId, number: runNumber, commit: commit?.id?.slice(0, 7), msg: commit?.message, status: 'passed', duration: '2m 30s', time: 'Just now', timestamp: now, by: pusher, stageResults };
-      broadcast('pipeline:run', { pipelineId: pipe.id, run });
-      broadcast('activity:new', { event: `Pipeline "${pipe.name}" ${runNumber} triggered by push`, type: 'pipeline', timestamp: now });
+      // Hand off to the real executor — it clones the repo, runs each
+      // stage's commands in a sandboxed workdir, streams logs over SSE,
+      // and writes the actual exit-code-derived status back to
+      // pipeline_runs. Without a linked repo it falls back to a logged
+      // simulation. Either way the run reflects what really happened
+      // instead of a fabricated success.
+      try {
+        await executePipeline(pipe, {
+          commit: commit?.id?.slice(0, 7) || 'unknown',
+          branch,
+          triggeredBy: `github:${pusher}`,
+          message: commit?.message || `push to ${branch}`,
+        });
+      } catch (err) {
+        console.error(`Webhook-triggered pipeline ${pipe.id} failed to start:`, err);
+        await execute('INSERT INTO activity (event,type,activity_timestamp) VALUES ($1,$2,$3)',
+          [`Pipeline "${pipe.name}" failed to start: ${err.message}`, 'pipeline', now]);
+      }
     }
 
     // Also log if no pipelines matched

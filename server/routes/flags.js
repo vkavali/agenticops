@@ -19,6 +19,30 @@ router.get('/', async (req, res) => {
   res.json(flags.map(f => ({ ...f, rollout: byFlag.get(f.id) || null })));
 });
 
+// SDK evaluation (GET form, registered before /:key so it doesn't get
+// captured by the param wildcard).
+//   GET /api/flags/evaluate?key=…&user_id=u-42&plan=pro
+//   GET /api/flags/evaluate?key=…&context=<base64url-json>
+router.get('/evaluate', async (req, res) => {
+  const { key, context: ctxParam, ...rest } = req.query;
+  if (!key) return res.status(400).json({ error: 'key required' });
+
+  let context = { ...rest };
+  if (ctxParam) {
+    try {
+      const decoded = Buffer.from(String(ctxParam), 'base64url').toString('utf8');
+      const parsed = JSON.parse(decoded);
+      if (parsed && typeof parsed === 'object') context = { ...context, ...parsed };
+    } catch {
+      return res.status(400).json({ error: 'context must be base64url-encoded JSON' });
+    }
+  }
+
+  const result = await evaluate(String(key), context);
+  if (result.reason === 'flag_not_found') return res.status(404).json(result);
+  res.json(result);
+});
+
 router.get('/:key', async (req, res) => {
   const flag = await queryOne('SELECT * FROM flags WHERE key=$1', [req.params.key]);
   if (!flag) return res.status(404).json({ error: 'Not found' });
@@ -102,11 +126,23 @@ router.delete('/:id/rules/:ruleId', operator, async (req, res) => {
   res.json({ ok: true });
 });
 
-// ── Evaluation (viewer ok — apps embed a viewer-scoped token) ──
+// POST evaluation — context fits in the body cleanly.
 router.post('/:key/evaluate', async (req, res) => {
   const result = await evaluate(req.params.key, req.body || {});
   if (result.reason === 'flag_not_found') return res.status(404).json(result);
   res.json(result);
+});
+
+// Bulk evaluation — evaluate every enabled flag against a single context.
+// Saves N round-trips for SDKs that bootstrap a flag map at session start.
+router.post('/evaluate-bulk', async (req, res) => {
+  const context = req.body?.context || req.body || {};
+  const flags = await query("SELECT key FROM flags WHERE enabled=true");
+  const out = {};
+  for (const f of flags) {
+    out[f.key] = await evaluate(f.key, context);
+  }
+  res.json({ context, flags: out });
 });
 
 // ── Rollouts ──

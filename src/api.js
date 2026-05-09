@@ -194,6 +194,7 @@ const api = {
     addRule: (id, data) => request('POST', `/api/flags/${id}/rules`, data),
     deleteRule: (id, ruleId) => request('DELETE', `/api/flags/${id}/rules/${ruleId}`),
     evaluate: (key, context) => request('POST', `/api/flags/${key}/evaluate`, context || {}),
+    evaluateBulk: (context) => request('POST', '/api/flags/evaluate-bulk', { context: context || {} }),
     startRollout: (id, data) => request('POST', `/api/flags/${id}/rollout`, data || {}),
     pauseRollout: (rolloutId, reason) => request('POST', `/api/flags/rollouts/${rolloutId}/pause`, { reason }),
     resumeRollout: (rolloutId) => request('POST', `/api/flags/rollouts/${rolloutId}/resume`),

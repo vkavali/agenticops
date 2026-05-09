@@ -18,7 +18,7 @@ const STATUS_MAP = {
 export default function DeploymentsView() {
   const {
     deployments, addDeployment, promoteDeployment, rollbackDeployment,
-    updateDeployment, services, toast, addActivity,
+    services, toast,
   } = useApp();
 
   const [showNewDeploy, setShowNewDeploy] = useState(false);
@@ -42,31 +42,41 @@ export default function DeploymentsView() {
     });
   }, [deployments, filterService, filterStatus, searchQuery]);
 
-  const createDeploy = () => {
+  const createDeploy = async () => {
     const ver = `v${Math.floor(Math.random() * 4) + 1}.${Math.floor(Math.random() * 9)}.${Math.floor(Math.random() * 99)}`;
+    // Mark earlier envs as already-deployed (the user is targeting an env;
+    // upstream envs are assumed live). The target env starts empty —
+    // beginDeploy() on the backend will set it to 'provisioning' / 'running'
+    // through the strategy state machine, and emit deployment:updated SSE
+    // events as each phase advances. No client-side timer.
     const envInit = {};
     const targetIdx = ENVIRONMENTS.indexOf(newDeploy.target);
     ENVIRONMENTS.forEach((env, i) => {
       if (i < targetIdx) envInit[env] = { status: 'passed', time: 'Just now', timestamp: Date.now() };
-      else if (i === targetIdx) envInit[env] = { status: 'running', time: 'Just now', timestamp: Date.now() };
       else envInit[env] = null;
     });
-    const dep = addDeployment({
+
+    const dep = await addDeployment({
       service: newDeploy.service, version: ver,
       msg: newDeploy.notes || `deploy from ${newDeploy.branch}`, by: 'operator',
+      strategy: newDeploy.strategy,
       environments: envInit,
     });
+    if (!dep?.id) { setShowNewDeploy(false); return; }
+
     setShowNewDeploy(false);
     toast(`Deploying ${newDeploy.service} ${ver} to ${newDeploy.target} (${newDeploy.strategy})...`);
 
-    // Simulate completion
-    setTimeout(() => {
-      updateDeployment(dep.id, d => ({
-        ...d, environments: { ...d.environments, [newDeploy.target]: { status: 'passed', time: 'Just now', timestamp: Date.now() } }
-      }));
-      addActivity(`${newDeploy.service} ${ver} deployed to ${newDeploy.target} successfully`, 'deploy');
-      toast(`${newDeploy.service} deployed to ${newDeploy.target}`, 'success');
-    }, 3000);
+    // Hand off to the real strategy engine. It walks the strategy's phases
+    // (rolling | canary | blue-green), updates the env state, opens an
+    // approval gate for production, and broadcasts SSE updates the UI
+    // already consumes. If the env is gated, the call returns a gate id
+    // and waits — the operator decides via the Approvals UI.
+    try {
+      await api.deployments.promote(dep.id, newDeploy.target);
+    } catch (err) {
+      toast(`Promote failed: ${err.message}`, 'error');
+    }
 
     // Reset form
     setNewDeploy({ service: 'api-service', branch: 'main', target: 'development', strategy: 'rolling', healthCheck: true, notes: '' });

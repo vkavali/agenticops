@@ -3,7 +3,7 @@ import { fileURLToPath } from 'url';
 import path from 'path';
 import dotenv from 'dotenv';
 import { initDb } from './db.js';
-import { seed } from './seed.js';
+import { seed, cleanSeedData } from './seed.js';
 import { addClient } from './sse.js';
 import { startSimulation } from './simulation.js';
 import { startMonitoring } from './monitor.js';
@@ -195,6 +195,19 @@ app.get('/api/auth/me', (req, res) => {
   res.json({ role: req.auth.role, label: req.auth.label, tokenId: req.auth.tokenId });
 });
 
+// Admin: wipe demo seed data so the operator can populate the system with
+// real services, pipelines, incidents, etc. Append-only audit + auth tables
+// are preserved (see seed.js DEMO_TABLES). Requires admin role.
+app.post('/api/admin/reset-demo', requireAuth('admin'), async (req, res) => {
+  try {
+    await cleanSeedData();
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('reset-demo failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Serve production build
 const distPath = path.resolve(__dirname, '..', 'dist');
 const { existsSync } = await import('fs');
@@ -237,7 +250,9 @@ async function start() {
     await step('migrateSecretsAtRest', migrateSecretsAtRest);
     await step('bootstrapAdmin', bootstrapAdmin);
     await step('seed', seed);
-    await step('seedSyntheticCosts', seedSyntheticCosts);
+    if (process.env.DISABLE_SEED !== 'true' && process.env.DISABLE_SEED !== '1') {
+      await step('seedSyntheticCosts', seedSyntheticCosts);
+    }
 
     onGateDecided(strategyOnGate);
     onGateDecided(iacOnGate);
@@ -245,7 +260,18 @@ async function start() {
 
     // Background loops: each handles its own internal errors. Don't await
     // — they're setInterval registrations.
-    try { startSimulation(); } catch (e) { console.error('startSimulation:', e.message); }
+    //
+    // The simulation engine (server/simulation.js) generates synthetic
+    // metrics + occasional fake incidents to make the demo feel alive when
+    // there are no real services connected. In a real deployment with
+    // health_url-configured services, the monitor + SLO evaluator produce
+    // real signal — set DISABLE_SIMULATION=true to silence the synthetic
+    // fluctuations.
+    if (process.env.DISABLE_SIMULATION !== 'true' && process.env.DISABLE_SIMULATION !== '1') {
+      try { startSimulation(); } catch (e) { console.error('startSimulation:', e.message); }
+    } else {
+      console.log('✓ Simulation skipped (DISABLE_SIMULATION=true)');
+    }
     try { startMonitoring(); } catch (e) { console.error('startMonitoring:', e.message); }
     try { startDriftSweep(); } catch (e) { console.error('startDriftSweep:', e.message); }
     try { startSloEvaluator(); } catch (e) { console.error('startSloEvaluator:', e.message); }

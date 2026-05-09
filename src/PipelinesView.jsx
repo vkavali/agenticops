@@ -26,7 +26,7 @@ const RUN_STATUS = {
 export default function PipelinesView() {
   const {
     pipelines, updatePipeline, addPipelineRun, addPipeline, deletePipeline,
-    addDeployment, addActivity, toast, STAGE_DEFAULTS,
+    toast, STAGE_DEFAULTS,
   } = useApp();
 
   const [selPipeId, setSelPipeId] = useState(pipelines[0]?.id);
@@ -63,49 +63,46 @@ export default function PipelinesView() {
     setTimeout(() => setIsSaved(false), 2000);
   };
 
-  const handleRun = () => {
+  const handleRun = async () => {
     if (isRunning || !selPipe) return;
+    // Persist any in-progress stage edits before triggering the run.
+    if (selPipe.stages !== stages) {
+      try { await updatePipeline(selPipeId, { stages }); } catch { /* toast already raised */ }
+    }
     setIsRunning(true);
     setActivePanel('runs');
-    const stageNames = stages.map(s => s.name);
     setRunStageProgress([]);
-
-    stageNames.forEach((name, i) => {
-      setTimeout(() => {
-        setRunStageProgress(prev => [...prev, { name, status: 'running', duration: '—', logs: [`> Executing ${name}...`] }]);
-      }, i * 1200);
-      setTimeout(() => {
-        setRunStageProgress(prev => prev.map((s, j) => j === i ? { ...s, status: 'passed', duration: `${(Math.random() * 60 + 10).toFixed(0)}s`, logs: [...s.logs, `✓ ${name} completed successfully`] } : s));
-      }, i * 1200 + 1000);
-    });
-
-    setTimeout(() => {
-      setIsRunning(false);
-      const runNum = selPipe.runs.length > 0 ? `#${parseInt(selPipe.runs[0].number.replace('#',''), 10) + 1}` : '#1';
-      const commit = Math.random().toString(36).slice(2, 9);
-      const newRun = {
-        id: generateId('r-'), number: runNum, commit, msg: 'triggered manually',
-        status: 'passed', duration: `${stageNames.length}m ${Math.floor(Math.random()*50)}s`,
-        time: 'Just now', timestamp: Date.now(), by: 'operator',
-        stageResults: stageNames.map(n => ({ name: n, status: 'passed', duration: `${(Math.random()*60+10).toFixed(0)}s`, logs: [`✓ ${n} completed`] }))
-      };
-      addPipelineRun(selPipeId, newRun);
-      setRunStageProgress([]);
-      toast('Pipeline completed successfully', 'success');
-
-      // Create actual deployment
-      const svc = selPipe.name.split('/')[0].trim();
-      addDeployment({
-        service: svc, commit, msg: `Pipeline ${selPipe.name} ${runNum}`, by: 'operator',
-        version: `v${Math.floor(Math.random()*4)+1}.${Math.floor(Math.random()*9)}.${Math.floor(Math.random()*99)}`,
-        environments: { development: { status: 'passed', time: 'Just now', timestamp: Date.now() } },
-      });
-      addActivity(`Pipeline ${selPipe.name} ${runNum} completed successfully`, 'pipeline');
-    }, stageNames.length * 1200 + 1200);
+    try {
+      // Real backend run. With a linked repo, executor.js clones it and
+      // runs each stage's commands; without one, it logs a simulated run
+      // and reports the same. Either way, the run record reflects real
+      // exit codes, and the stage state machine streams over SSE
+      // (pipeline:run / pipeline:stage / pipeline:log / pipeline:finished),
+      // which the store consumes to refresh the run list. The button
+      // re-enables on the finished event.
+      await addPipelineRun(selPipeId, { msg: 'triggered manually', by: 'operator' });
+      toast('Pipeline run started', 'success');
+    } catch (err) {
+      toast(`Failed to start: ${err.message}`, 'error');
+    } finally {
+      // Don't keep the local "running" state forever — even if SSE drops,
+      // the run row is in the DB. A short timeout so the spinner doesn't
+      // get stuck on a UI that missed the finished event.
+      setTimeout(() => setIsRunning(false), 1500);
+    }
   };
 
-  const handleAddPipeline = () => {
-    const p = addPipeline({ name: `new-pipeline-${pipelines.length + 1}` });
+  const handleAddPipeline = async () => {
+    // Default scaffold: no stages, no repo. Operators add stages via the
+    // builder and connect a repo from the Settings → GitHub flow. Until a
+    // repo + stages are configured, runs go through executor.js's
+    // simulation path so the row still gets the right shape.
+    const p = await addPipeline({
+      name: `new-pipeline-${pipelines.length + 1}`,
+      branch: 'main',
+      stages: [],
+    });
+    if (!p?.id) return;
     setSelPipeId(p.id);
     setStages([]);
   };

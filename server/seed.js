@@ -1,4 +1,4 @@
-import { query, execute, queryOne } from './db.js';
+import { query, execute } from './db.js';
 
 // Default data matching what was in store.jsx
 const SERVICES = [
@@ -185,7 +185,56 @@ const SETTINGS = {
   general: { orgName: 'AgenticOps', timezone: 'UTC', syncInterval: '30s', dataRetention: '90 days' },
 };
 
+// Tables wiped by cleanSeedData(). Append-only artifacts (audit_log,
+// api_tokens, github_connections, integrations) are NOT touched — those
+// are real configuration that survives a demo reset.
+const DEMO_TABLES = [
+  'pipeline_runs', 'pipelines',
+  'deployments',
+  'incidents',
+  'activity',
+  'health_checks',
+  'links', 'nodes',
+  'services',
+  'app_state',
+];
+
+// Drop every row from the demo tables. Used by the admin reset endpoint when
+// the operator wants to clear the seeded sample so they can populate the
+// system with real data (real services, real pipelines, real incidents).
+export async function cleanSeedData() {
+  console.log('⏳ Wiping demo seed data...');
+  for (const t of DEMO_TABLES) {
+    try {
+      await execute(`DELETE FROM ${t}`);
+    } catch (err) {
+      // Some tables may not exist on older schemas — skip and continue.
+      console.warn(`  - skip ${t}: ${err.message}`);
+    }
+  }
+  // Also clear the `settings` rows we seeded with sample integrations / envs,
+  // but keep org-scoped settings the user has edited. The simplest signal:
+  // wipe only the keys we know we seeded.
+  for (const k of Object.keys(SETTINGS)) {
+    try { await execute('DELETE FROM settings WHERE key=$1', [k]); } catch (e) { void e; }
+  }
+  console.log('✓ Demo seed data wiped');
+}
+
 export async function seed() {
+  // Honor an explicit opt-out so production deployments don't carry sample
+  // data. Set DISABLE_SEED=true (or set CLEAN_SEED_DATA=true to wipe whatever
+  // a previous boot inserted before re-seeding logic runs).
+  if (process.env.DISABLE_SEED === 'true' || process.env.DISABLE_SEED === '1') {
+    console.log('✓ Seed skipped (DISABLE_SEED=true)');
+    return;
+  }
+  if (process.env.CLEAN_SEED_DATA === 'true' || process.env.CLEAN_SEED_DATA === '1') {
+    await cleanSeedData();
+    // After cleaning we still want fresh seed unless DISABLE_SEED is also set.
+    // (We already returned above if DISABLE_SEED is true.)
+  }
+
   // Check if already seeded
   const existing = await query('SELECT COUNT(*) as count FROM services');
   if (parseInt(existing[0].count) > 0) {
